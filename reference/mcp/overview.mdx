@@ -1,0 +1,90 @@
+---
+title: "Engram MCP Server Overview: stdio, Tools, and Resources"
+sidebarTitle: "Overview"
+description: "Engram's FastMCP stdio server exposes two tools and one resource so any MCP-capable agent can capture and recall memories without extra setup."
+---
+
+Engram ships a built-in MCP server built on [FastMCP](https://github.com/jlowin/fastmcp) that runs over standard input/output. Any MCP-capable agent — Claude Code, Codex, opencode, or a custom client — can connect to it with a single config entry and immediately start reading from and writing to your local memory store.
+
+## Starting the server
+
+The server can be started in two equivalent ways:
+
+```bash
+# Dedicated entry point (recommended for MCP config files)
+engram-mcp
+
+# Alias via the main CLI
+engram serve
+```
+
+Both commands block and communicate over stdio. There is no TCP port, no authentication header, and no cloud endpoint — the process speaks the MCP stdio transport protocol directly with its parent client.
+
+<Tip>
+  Run `engram init <harness>` to print a ready-to-paste config snippet for your specific client (Claude Code, Codex, or opencode). See the [Wiring Agents guide](/guides/wiring-agents) for full walkthrough instructions.
+</Tip>
+
+## What the server exposes
+
+The Engram MCP server registers **two tools** and **one resource**:
+
+| Name | Type | Purpose |
+|---|---|---|
+| `remember` | Tool | Stage a durable fact about the user into memory (pending review) |
+| `recall` | Tool | Return promoted memories, optionally filtered by a query string |
+| `memory://recall` | Resource | Compact memory context block for clients to auto-load each session |
+
+Detailed documentation for each surface lives on the following pages:
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/reference/mcp/tools">
+    Full parameter docs for `remember` and `recall`.
+  </Card>
+  <Card title="Resources" icon="database" href="/reference/mcp/resources">
+    The `memory://recall` URI and rendered block format.
+  </Card>
+</CardGroup>
+
+## Why review and promotion are CLI-only
+
+Agents can **write** new facts via `remember`, but they cannot approve or promote those facts into the durable store. Promotion, rejection, and forgetting are operations that only the human operator can perform through the CLI (`engram review`, `engram approve`, `engram reject`).
+
+<Warning>
+  This is a deliberate security boundary. An agent that can both write *and* approve memories could silently overwrite sensitive information — fiscal details, health data, real-name identity — without your knowledge. The CLI is the human gate; the MCP server is the agent gate.
+</Warning>
+
+Facts written through `remember` land in a **pending queue** with a `status` of `pending`. They become visible to `recall` only after a human promotes them. Low-risk kinds (`preference`, `tooling`, `project`, `infra`) may be auto-promoted if `autopromote = true` is set in your config; sensitive kinds (`identity`, `fiscal`, `people`, `constraint`, `location`, `health`) always require explicit CLI review regardless of that setting.
+
+## Integration snippets
+
+`engram init <harness>` prints the correct config block for your client. The three supported harnesses are shown below.
+
+<CodeGroup>
+
+```json Claude Code (.mcp.json)
+// Place in your project root as .mcp.json, or in ~/.claude.json for global scope
+{
+  "mcpServers": {
+    "engram": { "command": "engram-mcp" }
+  }
+}
+```
+
+```toml Codex (~/.codex/config.toml)
+[mcp_servers.engram]
+command = "engram-mcp"
+```
+
+```json opencode (~/.config/opencode/opencode.json)
+{
+  "mcp": {
+    "engram": { "type": "local", "command": ["engram-mcp"] }
+  }
+}
+```
+
+</CodeGroup>
+
+<Note>
+  All three harnesses discover `engram-mcp` on your `PATH`. Make sure the package is installed — `which engram-mcp` should return a path — before adding the config entry.
+</Note>

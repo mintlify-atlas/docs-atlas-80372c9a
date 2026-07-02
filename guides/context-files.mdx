@@ -1,0 +1,129 @@
+---
+title: "Writing Engram Memories into AGENTS.md and CLAUDE.md"
+sidebarTitle: "Context Files"
+description: "Use engram gen-context to write promoted memories into AGENTS.md or CLAUDE.md so agents without MCP can still benefit from persistent memory."
+---
+
+Not every agent speaks MCP. Some agents and IDE extensions consume context through files in your repository — a pattern popularised by `AGENTS.md` and `CLAUDE.md`. Engram's `gen-context` command bridges these two worlds: it renders your promoted memories into a clearly delimited markdown block and can upsert that block directly into any file you choose.
+
+## What `engram gen-context` produces
+
+Running `engram gen-context` without arguments prints a formatted memory block to stdout. The block is wrapped in HTML-comment delimiters that Engram uses to locate and update the section on subsequent runs without touching the rest of the file.
+
+```bash
+engram gen-context
+```
+
+Example output:
+
+```markdown
+<!-- engram:begin -->
+## What engram remembers about you
+
+**tooling**
+- I prefer pnpm over npm
+
+**project**
+- Uses monorepo structure with shared tsconfig
+
+**workflow**
+- Always run tests before committing
+<!-- engram:end -->
+```
+
+Memories are grouped by category and sorted by confidence descending. Only `promoted` memories appear — pending, rejected, and stale memories are excluded.
+
+## Block delimiter format
+
+The delimiters `<!-- engram:begin -->` and `<!-- engram:end -->` mark the managed section of any file Engram writes to. Everything between them is owned by Engram and will be replaced on the next `--write` run. Everything outside them is left untouched.
+
+This means you can freely edit the rest of `AGENTS.md` — your own instructions, project notes, team conventions — and Engram will only ever update its own block.
+
+<Note>
+  If no block is found in the target file, Engram appends the block at the end of the file. If a block already exists, Engram replaces it in place, preserving its position within the file.
+</Note>
+
+## Writing into a file with `--write`
+
+Pass `--write <filename>` to upsert the block directly into a file. If the file does not exist, Engram creates it.
+
+```bash
+# Upsert into AGENTS.md (common for Codex and opencode)
+engram gen-context --write AGENTS.md
+
+# Upsert into CLAUDE.md (common for Claude Code without MCP)
+engram gen-context --write CLAUDE.md
+```
+
+After running, the target file will contain the updated block alongside any content you have written manually. Re-run the command at any time to refresh the block as your memory store evolves.
+
+## Limiting the number of memories with `--limit`
+
+By default `gen-context` includes up to 30 promoted memories. Use `--limit` to control the number rendered into the block.
+
+```bash
+# Write only the top 20 highest-confidence memories
+engram gen-context --write CLAUDE.md --limit 20
+
+# Print a condensed block to stdout
+engram gen-context --limit 10
+```
+
+Lower limits keep the context file compact for agents with smaller context windows. Higher limits are appropriate when you have many project-specific memories and want the agent to have access to all of them.
+
+<Tip>
+  If you use `--write` on a project where multiple team members share `AGENTS.md`, commit the file to version control. Every developer can regenerate their own block locally, but the file itself serves as a shared record of project-level memory.
+</Tip>
+
+## How recall ranking works
+
+The memories included in the block are selected using the same recall ranking logic that powers the MCP resource:
+
+- Only `promoted` memories are candidates.
+- **Without a query:** memories are sorted by confidence score, descending.
+- **With a query** (future feature): keyword overlap scoring re-ranks results to surface the most relevant memories for a specific topic.
+
+This means the memories at the top of the block — and the ones most likely to survive a `--limit` cut — are those Engram is most confident about.
+
+## Multi-file example
+
+You can maintain context files for multiple agents from the same memory store by running `gen-context` with different target files.
+
+<CodeGroup>
+
+```bash AGENTS.md (Codex / opencode)
+engram gen-context --write AGENTS.md --limit 25
+```
+
+```bash CLAUDE.md (Claude Code fallback)
+engram gen-context --write CLAUDE.md --limit 25
+```
+
+</CodeGroup>
+
+Both files will contain the same promoted memories rendered in the same block format, so agents reading either file see a consistent view.
+
+## Context files vs. the MCP resource
+
+Both mechanisms surface the same promoted memories, but they work differently.
+
+| | Context file (`--write`) | MCP resource (`memory://recall`) |
+|---|---|---|
+| **Agent requirement** | Any agent that reads markdown files | MCP-capable agent with Engram wired |
+| **Update trigger** | Manual (`engram gen-context --write`) | Automatic — fetched at session start |
+| **Scope** | Snapshot at time of last write | Always live, always current |
+| **Best for** | Non-MCP agents, shared team files, CI contexts | Claude Code, Codex, opencode with live wiring |
+
+Use context files when the agent you are working with does not support MCP, when you want to commit a snapshot of project memory to version control, or when you need a human-readable summary of what Engram currently knows.
+
+Use the MCP resource when you want the agent to always read the freshest possible memories without any manual refresh step.
+
+<Warning>
+  A context file is a **snapshot**. If you promote or reject memories after writing the file, the file will be out of date until you run `engram gen-context --write` again. Consider adding the write command to a pre-commit hook or a project task to keep it fresh.
+</Warning>
+
+## Next steps
+
+- [Wiring Agents](/guides/wiring-agents) — set up the MCP resource for live memory access.
+- [Reviewing Memories](/guides/reviewing-memories) — approve candidates so they appear in generated context.
+- [Harvesting Sessions](/guides/harvesting-sessions) — populate your memory store from existing transcripts.

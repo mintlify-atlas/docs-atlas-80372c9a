@@ -1,0 +1,130 @@
+---
+title: "Risk Tiers: How Engram Routes and Guards Memories"
+sidebarTitle: "Risk Tiers"
+description: "Learn how Engram's three risk tiers control auto-append vs. human review, which kinds map to each tier, and why conflicts always force manual approval."
+---
+
+Not all memories carry the same risk if they are wrong. A misremembered package manager preference is annoying; a misremembered budget ceiling or production constraint could cause real harm. Engram uses a **three-tier risk model** to decide — without asking you every time — whether a candidate memory can be written automatically or must wait for explicit approval.
+
+---
+
+## The three tiers
+
+| Tier | Name | Behaviour |
+|---|---|---|
+| **1** | Auto-append | Written to `memory-log.md` immediately on `sync --apply`. No human confirmation required. |
+| **2** | Registry | Added to the `memory.md` frontmatter registry automatically. Used for memories that need indexing but pose no sensitivity risk. |
+| **3** | Curated | Held in `queue/<id>.json` until you explicitly run `engram promote <id> --confirm`. `requires_confirm` returns `true`. |
+
+The tier for a memory is computed at bridge time by `classify(kind, conflict=…, edits_curated_node=…)`:
+
+```python
+def classify(kind, *, conflict=False, edits_curated_node=False) -> int:
+    if conflict or edits_curated_node or kind in CURATED_KINDS:
+        return TIER_CURATED
+    return TIER_AUTO_APPEND
+```
+
+Any of three conditions can force a memory to tier 3, even if its kind would normally be tier 1:
+
+1. The dedup engine returned **`conflict`** — a contradictory memory already exists.
+2. The new memory would **edit a node already in a curated slot** of the registry.
+3. The memory's `kind` is a member of **`CURATED_KINDS`**.
+
+---
+
+## Kind-to-tier mapping
+
+| Kind | Default Tier | Auto-appendable? | Notes |
+|---|---|---|---|
+| `preference` | 1 | ✅ Yes | Everyday workflow preferences — low blast radius if wrong |
+| `tooling` | 1 | ✅ Yes | CLI tools, editors, package managers |
+| `project` | 1 | ✅ Yes | Active repos, tech-stack facts |
+| `infra` | 1 | ✅ Yes | Hosts, regions, cluster names |
+| `identity` | 3 | ❌ No | Names, handles, account IDs — curated |
+| `fiscal` | 3 | ❌ No | Budgets, billing — curated |
+| `people` | 3 | ❌ No | Contacts, team roles — curated |
+| `constraint` | 3 | ❌ No | Policies, approval gates — curated |
+| `location` | 3 | ❌ No | Offices, time zones — curated |
+| `health` | 3 | ❌ No | Medical / dietary — curated |
+
+<Note>
+There is no kind that defaults to tier 2. Tier 2 is reserved for memories that are elevated out of tier 1 due to minor metadata concerns during registry reconciliation — it is assigned programmatically, not by kind alone.
+</Note>
+
+---
+
+## Why conflicts always escalate
+
+The dedup engine compares every incoming candidate against all promoted memories using token overlap and **precision token** matching (identifiers, dates, monetary amounts). When it detects a contradiction — the same subject but a different value — it returns `"conflict"` and `classify` immediately returns `TIER_CURATED`, regardless of what kind the memory has.
+
+```
+Existing promoted: "Monthly cloud budget is $200"  (mem-0012, fiscal, tier 3)
+Incoming harvest:  "Monthly cloud budget is $500"  (candidate, fiscal)
+
+→ conflict=True  →  classify(Kind.fiscal, conflict=True) = TIER_CURATED
+→ Both versions queued; you decide which is authoritative
+```
+
+This means even a `preference` or `tooling` memory can end up in the review queue if it contradicts something you previously confirmed. The alternative — silently overwriting a promoted memory with an unverified harvested value — would be a data integrity failure.
+
+<Warning>
+A conflict does **not** modify or delete the existing promoted memory. Both the incumbent and the challenger sit in the queue side-by-side. You choose which to keep (or edit both) before anything in `memory.md` changes.
+</Warning>
+
+---
+
+## The `requires_confirm` gate
+
+Any code path that writes to the permanent store checks `requires_confirm(tier)` before proceeding:
+
+```python
+def requires_confirm(tier: int) -> bool:
+    return tier >= TIER_CURATED   # True for tier 3
+```
+
+For tier-1 and tier-2 memories, `requires_confirm` returns `False` and the bridge writes directly. For tier-3 memories, the bridge leaves the record in `queue/` and prints a prompt reminding you to run `engram review list`.
+
+---
+
+## The `kind_allowlist` mechanism
+
+The `kind_allowlist` configuration key lets you expand the set of kinds that Engram is permitted to auto-capture for a given project. For example, adding `project` to the allowlist (it already is by default) or adding `infra` lets passive harvest write those kinds to the log without asking.
+
+```toml
+# engram.toml
+[capture]
+kind_allowlist = ["preference", "tooling", "project", "infra"]
+```
+
+<Warning>
+Curated kinds — `identity`, `fiscal`, `people`, `constraint`, `location`, and `health` — **can never be added to `kind_allowlist`**. Attempting to include them raises a validation error at startup. The curated set is hard-coded in `CURATED_KINDS` and is not overridable by configuration.
+</Warning>
+
+The allowlist only controls which tier-1 kinds Engram will *auto-capture during passive harvest*. It has no effect on memories created via `engram remember` (which always stages a candidate regardless of kind) or on conflict escalation.
+
+---
+
+## Tier assignment at a glance
+
+<Accordion title="Step-by-step tier classification walkthrough">
+When the bridge processes a pending candidate, it runs the following checks in order:
+
+1. **Conflict check** — Has dedup returned `"conflict"` for this candidate?
+   - Yes → `TIER_CURATED` (stop)
+
+2. **Curated-node edit check** — Does this memory update the `fact` of an existing `id` that currently lives in a curated slot?
+   - Yes → `TIER_CURATED` (stop)
+
+3. **Kind check** — Is `kind` in `CURATED_KINDS`?
+   - Yes → `TIER_CURATED` (stop)
+
+4. **Default** — Kind is in `AUTO_KINDS`.
+   - → `TIER_AUTO_APPEND`
+
+The final tier is stored as `risk_tier` on the memory record and is visible in `engram review list` and `audit.jsonl`.
+</Accordion>
+
+<Tip>
+If you are unsure why a memory landed in the review queue, run `engram review show <id>`. The output includes the `risk_tier` value and the reason it was assigned — `conflict`, `curated_kind`, or `edits_curated_node`.
+</Tip>

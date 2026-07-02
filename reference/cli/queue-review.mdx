@@ -1,0 +1,250 @@
+---
+title: "Queue & Review: Inspect, Approve, and Reject Memories"
+sidebarTitle: "Queue & Review"
+description: "Manage the Engram review workflow: list queued memories, inspect entries, promote or reject candidates, and retract promoted facts using `forget`."
+---
+
+The review workflow is Engram's safety layer between raw candidate memories and the active recall context your agents see. Memories that `sync` routes to `queue` wait here until a human decides their fate. The five commands on this page — `queue`, `show`, `promote`, `reject`, and `forget` — cover the entire lifecycle from inspection to final disposition. Nothing in the review queue affects recall until you explicitly call `promote --confirm`.
+
+---
+
+## `queue`
+
+Lists every memory currently awaiting human review. These are memories that `sync` routed to the `queue` bucket rather than auto-promoting, typically because they touch higher-risk kinds like `fiscal`, `identity`, or `constraint`.
+
+```bash
+engram queue
+```
+
+### Arguments & Options
+
+This command takes no arguments or options.
+
+### Output format
+
+```text
+<id>  [<kind>]  <fact>  (<reason>)
+```
+
+The `reason` field explains why the memory was held for review rather than auto-promoted.
+
+### Example
+
+```bash
+engram queue
+```
+
+```bash
+mem-0002  [fiscal]      My AWS budget cap is $500/mo        (tier-3)
+mem-0006  [identity]    I work at Acme Corp                 (tier-3)
+mem-0009  [constraint]  Never delete production databases   (tier-3)
+```
+
+<Note>
+  If `engram queue` returns no output, your review queue is empty. All pending candidates have either been auto-promoted, skipped, or not yet processed by `engram sync`.
+</Note>
+
+---
+
+## `show`
+
+Displays a single queued memory in detail, including its confidence score and — where applicable — a diff showing how promoting it would change an existing memory.
+
+```bash
+engram show <memory_id>
+```
+
+### Arguments & Options
+
+<ParamField body="memory_id" type="string" required>
+  The identifier of the memory to inspect. Example: `mem-0002`. Use `engram queue` to list available IDs.
+</ParamField>
+
+### Output format
+
+```text
+<id> [<kind>] conf=<float>
+<fact>
+```
+
+If promoting the memory would update an existing entry, a diff is appended:
+
+```diff
+mem-0002 [fiscal] conf=0.82
+My AWS budget cap is $500/mo
+
+- My AWS budget cap is $200/mo
++ My AWS budget cap is $500/mo
+```
+
+### Example
+
+```bash
+engram show mem-0002
+```
+
+```diff
+mem-0002 [fiscal] conf=0.82
+My AWS budget cap is $500/mo
+
+- My AWS budget cap is $200/mo
++ My AWS budget cap is $500/mo
+```
+
+<Tip>
+  Always run `engram show <id>` before `engram promote <id> --confirm`, especially when a diff is present. The diff reveals if promoting the memory would silently overwrite an older fact you may still want to keep.
+</Tip>
+
+---
+
+## `promote`
+
+Approves a queued memory and moves it to `promoted` status, making it visible in `engram recall` and injected into agent context via `gen-context`. The `--confirm` flag is mandatory — omitting it is an error, not a prompt.
+
+```bash
+engram promote <memory_id> --confirm
+```
+
+### Arguments & Options
+
+<ParamField body="memory_id" type="string" required>
+  The identifier of the memory to approve. Example: `mem-0002`.
+</ParamField>
+
+<ParamField query="--confirm" type="boolean" default="false">
+  Required acknowledgement flag. Without it, the command exits with an error. This is a deliberate guardrail against accidental promotion of tier-3 memories.
+</ParamField>
+
+### Output
+
+On success:
+
+```bash
+promoted mem-0002
+```
+
+Without `--confirm`:
+
+```bash
+tier-3 write requires confirmation (pass --confirm)
+```
+
+### Examples
+
+Attempt to promote without confirmation (intentional error):
+
+```bash
+engram promote mem-0002
+```
+
+```bash
+tier-3 write requires confirmation (pass --confirm)
+```
+
+Promote with explicit confirmation:
+
+```bash
+engram promote mem-0002 --confirm
+```
+
+```bash
+promoted mem-0002
+```
+
+<Warning>
+  Promotion is **not reversible** through `promote`/`reject` alone. If you promote a memory in error, use `engram forget <id>` to retract it. The memory will be marked rejected and an undo token will be emitted for auditing.
+</Warning>
+
+---
+
+## `reject`
+
+Rejects a queued memory, marking it as `rejected` and removing it from further consideration. An optional reason string is attached to the audit record.
+
+```bash
+engram reject <memory_id> [--reason <text>]
+```
+
+### Arguments & Options
+
+<ParamField body="memory_id" type="string" required>
+  The identifier of the memory to reject. Example: `mem-0003`.
+</ParamField>
+
+<ParamField query="--reason" type="string" default='""'>
+  Human-readable explanation for the rejection. Stored in the audit log but not displayed in normal `list` output. Example: `"outdated after project pivot"`.
+</ParamField>
+
+### Output
+
+```bash
+rejected mem-0003
+```
+
+### Examples
+
+Reject without a reason:
+
+```bash
+engram reject mem-0003
+```
+
+```bash
+rejected mem-0003
+```
+
+Reject with an audit note:
+
+```bash
+engram reject mem-0003 --reason "outdated after project pivot"
+```
+
+```bash
+rejected mem-0003
+```
+
+<Note>
+  Rejected memories are retained in the store with `status: rejected` and are visible via `engram list --status rejected`. They are never surfaced by `recall` or `gen-context`.
+</Note>
+
+---
+
+## `forget`
+
+Retracts a previously promoted memory by marking it `rejected` and emitting an undo token. The fact is removed from active recall immediately but remains in the audit history. This is the correct way to undo an erroneous `promote`.
+
+```bash
+engram forget <memory_id>
+```
+
+### Arguments & Options
+
+<ParamField body="memory_id" type="string" required>
+  The identifier of a **promoted** memory to retract. Calling `forget` on a non-promoted memory returns an error. Example: `mem-0001`.
+</ParamField>
+
+### Output
+
+```bash
+removed mem-0001 from recall (history and audit may retain it)  undo_token=<token>
+```
+
+The `undo_token` is an opaque string you can record if you want to trace this retraction in your audit log.
+
+### Example
+
+```bash
+engram forget mem-0001
+```
+
+```bash
+removed mem-0001 from recall (history and audit may retain it)  undo_token=eyJ0eXBlIjoiZm9yZ2V0IiwiaWQiOiJtZW0tMDAwMSJ9
+```
+
+<Warning>
+  `forget` only works on memories with `status: promoted`. Attempting to forget a `pending`, `queued`, or already `rejected` memory will return an error. Use `engram reject` for non-promoted memories.
+</Warning>
+
+<Note>
+  The undo token is informational only in the current release. Future versions of Engram may support `engram undo <token>` to restore a forgotten memory from the audit log.
+</Note>

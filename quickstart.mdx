@@ -1,47 +1,179 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Quickstart: Capture, Review, and Recall Memories"
+sidebarTitle: "Quickstart"
+description: "Install Engram, capture your first facts, run the promotion bridge, approve a sensitive memory, and wire into a coding agent — all in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+This guide walks you through the core Engram workflow end to end: installing the tool, staging a low-risk fact and a sensitive one, running the sync bridge to promote or queue them, reviewing and approving the queued fact, recalling your memory registry, and finally wiring Engram into a coding agent so every new session starts with full context.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+### Install Engram
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Engram is not yet on PyPI, so install it directly from GitHub. Pick whichever tool you already have:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
-</Steps>
+<CodeGroup>
+
+```bash uv
+uv tool install git+https://github.com/xantorres/engram
+```
+
+```bash pipx
+pipx install git+https://github.com/xantorres/engram
+```
+
+</CodeGroup>
+
+Verify the install:
+
+```bash
+engram version
+```
+
+<Note>
+  Python 3.11 or newer is required. Run `python --version` if you are unsure which version is active.
+</Note>
+
+### Stage Two Facts
+
+Use `engram remember` to stage facts. Engram doesn't write them to the registry immediately — they go into a staging area first so you can control what gets promoted.
+
+Stage a low-risk tooling preference:
+
+```bash
+engram remember "I prefer pnpm over npm" --kind tooling
+```
+
+Now stage a sensitive fiscal fact:
+
+```bash
+engram remember "My VAT number is 12345678X" --kind fiscal
+```
+
+The `tooling` kind is tier 1 (auto-eligible). The `fiscal` kind is tier 3 and will always be held for human review regardless of any environment variable.
+
+### Run the Promotion Bridge
+
+Set `ENGRAM_AUTOPROMOTE=true` to let tier-1 facts promote automatically, then run `engram sync` with `--apply` to execute (omitting `--apply` runs a dry-run):
+
+```bash
+export ENGRAM_AUTOPROMOTE=true
+engram sync --apply
+```
+
+Expected output:
+
+```
+# append mem-0001 [tooling] I prefer pnpm over npm   (low-risk)
+# queue  mem-0002 [fiscal]  My VAT number is ...     (fiscal needs review)
+```
+
+The tooling fact was appended to `memory.md` immediately. The fiscal fact was moved to `queue/` and is waiting for your approval.
 
 <Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
+  Skip `export ENGRAM_AUTOPROMOTE=true` if you prefer to review every fact manually before promotion, regardless of tier.
 </Tip>
+
+### Inspect the Queue
+
+List everything currently awaiting review:
+
+```bash
+engram queue
+```
+
+To read the full detail of a specific queued memory:
+
+```bash
+engram show mem-0002
+```
+
+You'll see the raw JSON including the kind, confidence score, timestamp, and the original fact text — everything you need to make an informed decision.
+
+### Promote the Sensitive Fact
+
+Once you've reviewed `mem-0002` and are satisfied it's correct, promote it with the required `--confirm` flag:
+
+```bash
+engram promote mem-0002 --confirm
+```
+
+<Warning>
+  The `--confirm` flag is mandatory for tier-3 kinds (`fiscal`, `identity`, `people`, `constraint`, `location`, `health`). Engram will refuse to promote without it as a guard against accidental approvals.
+</Warning>
+
+### Recall Your Memories
+
+Check the live registry to confirm both facts are now promoted:
+
+```bash
+engram recall
+```
+
+Filter by a search term to find specific memories:
+
+```bash
+engram recall pnpm
+```
+
+Use `--limit` to cap results in larger registries:
+
+```bash
+engram recall --limit 10
+```
+
+### Wire Into a Coding Agent
+
+Generate an MCP config snippet and append it directly to your agent's config file. For Codex CLI:
+
+```bash
+engram init codex >> ~/.codex/config.toml
+```
+
+For Claude Code or OpenCode, substitute the harness name:
+
+```bash
+engram init claude-code
+engram init opencode
+```
+
+Then generate a curated context block and write it to `AGENTS.md` so agents pick it up as static context even without MCP:
+
+```bash
+engram gen-context --write AGENTS.md
+```
+
+### Start the MCP Server
+
+Start the Engram MCP server over stdio so your agent can call `recall`, `remember`, and other tools live during a session:
+
+```bash
+engram serve
+```
+
+Your agent will now resolve the `engram-mcp` entry point and connect automatically based on the config snippet you added in the previous step.
+
+</Steps>
+
+## Harvesting From Existing Sessions
+
+If you have existing session transcripts (for example Codex JSONL logs), you can mine them for facts in bulk rather than entering each one manually:
+
+```bash
+engram harvest ~/.codex/sessions/2026/some-session.jsonl --harness codex
+```
+
+Expected output:
+
+```
+# harvested 3 facts (skipped dupe=2 trivial=1)
+```
+
+Harvested facts follow the same staging and promotion lifecycle as manually remembered ones.
+
+## What to Do Next
+
+- Run `engram doctor` to surface stale, low-confidence, unverified, or conflicting memories in your registry.
+- Use `engram list --status pending` to see everything still in staging.
+- Use `engram forget <memory-id>` to retract a promoted memory — Engram emits an undo token so the operation is reversible.
+- Read the [Memory Model](/concepts/memory-model) docs to understand kinds, tiers, confidence scores, and status transitions in depth.

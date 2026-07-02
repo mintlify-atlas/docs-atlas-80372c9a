@@ -1,0 +1,142 @@
+---
+title: "Harvest & Import: Extract and Load Memories in Bulk"
+sidebarTitle: "Harvest & Import"
+description: "Mine durable facts from agent transcripts with `harvest`, or bulk-load from Markdown files with `import`. Both stage pending candidates for review."
+---
+
+Rather than typing facts one at a time, `harvest` and `import` let you populate Engram in bulk. `harvest` reads a saved session transcript from a supported harness — Claude Code, Codex, or OpenCode — and extracts facts that meet a minimum confidence threshold, deduplicating against what you already have. `import` handles the complementary case: you have a directory of Markdown notes with YAML frontmatter and want to absorb them into the memory store. Both commands stage candidates in `pending` status so nothing lands in recall until the review cycle runs.
+
+---
+
+## `harvest`
+
+Analyzes a harness session transcript (`.jsonl` or similar) and mines durable, high-signal facts from the conversation. Candidates are staged as `pending` memories and skip any that duplicate an existing entry or fall below the minimum confidence threshold.
+
+```bash
+engram harvest <path> [--harness <harness>] [--min-confidence <float>]
+```
+
+### Arguments & Options
+
+<ParamField body="path" type="path" required>
+  Filesystem path to the session transcript file. The expected format depends on the selected harness. Example: `/home/user/.claude/sessions/abc123.jsonl`.
+</ParamField>
+
+<ParamField query="--harness" type="string" default="claude-code">
+  The agent harness that produced the transcript. Engram uses this to select the correct parser.
+
+  Valid values: `claude-code`, `codex`, `opencode`.
+</ParamField>
+
+<ParamField query="--min-confidence" type="float" default="0.5">
+  Minimum confidence score `(0.0–1.0)` a candidate must reach to be staged. Candidates below this threshold are counted as `trivial` in the summary and discarded.
+</ParamField>
+
+<ParamField query="-H" type="string">
+  Short alias for `--harness`.
+</ParamField>
+
+### Output
+
+A single summary line reports how many candidates were staged and why others were skipped:
+
+```bash
+staged <N> candidate(s) from <path> (skipped dupe=<N> trivial=<N>)
+```
+
+- **dupe** — the extracted fact matched an existing memory (same or very close text).
+- **trivial** — the fact's confidence score was below `--min-confidence`.
+
+### Examples
+
+Harvest a Claude Code session with default settings:
+
+```bash
+engram harvest ~/.claude/sessions/abc123.jsonl
+```
+
+```bash
+staged 3 candidate(s) from /home/user/.claude/sessions/abc123.jsonl (skipped dupe=2 trivial=1)
+```
+
+Harvest a Codex transcript, raising the confidence bar:
+
+```bash
+engram harvest ./codex-session.jsonl --harness codex --min-confidence 0.75
+```
+
+```bash
+staged 1 candidate(s) from ./codex-session.jsonl (skipped dupe=0 trivial=4)
+```
+
+Harvest an OpenCode session using the short flag:
+
+```bash
+engram harvest ./oc-session.jsonl -H opencode
+```
+
+```bash
+staged 5 candidate(s) from ./oc-session.jsonl (skipped dupe=1 trivial=0)
+```
+
+<Note>
+  Harvested memories are tagged with `learned_by: harvest`. The `doctor` command will flag them as **unverified** until a human or agent confirms the fact via `promote --confirm`.
+</Note>
+
+<Tip>
+  Run `engram sync` (dry-run) immediately after harvesting to preview which candidates would be promoted before committing anything with `--apply`.
+</Tip>
+
+<Warning>
+  Transcript files can contain sensitive information. Engram processes them locally and does not transmit the file contents anywhere, but review the staged candidates with `engram queue` before promoting.
+</Warning>
+
+---
+
+## `import`
+
+Bulk-imports memories from a directory of Markdown files that carry YAML frontmatter. Each `.md` file in the target directory is parsed: the frontmatter supplies metadata (kind, confidence, etc.) and the body or a designated frontmatter field provides the fact text. Imported memories land in `pending` status.
+
+```bash
+engram import <directory>
+```
+
+### Arguments & Options
+
+<ParamField body="directory" type="path" required>
+  Path to a directory containing `.md` files with YAML frontmatter. Engram walks the directory non-recursively. Example: `./my-notes`.
+</ParamField>
+
+### Output
+
+```bash
+imported <N> memories from <directory>
+```
+
+### Example
+
+```bash
+engram import ./my-notes
+```
+
+```bash
+imported 5 memories from ./my-notes
+```
+
+<Note>
+  Imported memories are tagged with `learned_by: imported` and will appear as **unverified** in `doctor` output until they are confirmed. Use `engram queue` to review them before running `engram sync --apply`.
+</Note>
+
+<Tip>
+  A typical frontmatter schema for import files looks like:
+
+  ```markdown
+  ---
+  kind: tooling
+  confidence: 0.85
+  ---
+  I prefer pnpm over npm
+  ```
+
+  Omitted fields fall back to Engram's defaults (`kind: preference`, `confidence: 0.6`).
+</Tip>

@@ -1,0 +1,146 @@
+---
+title: "MCP Tools: remember and recall — Engram Reference"
+sidebarTitle: "Tools"
+description: "Full parameter and return-value reference for Engram's two MCP tools: remember stages a fact, recall retrieves promoted memories by relevance."
+---
+
+Engram's MCP server exposes two tools that agents can call during a session. `remember` stages a new fact about the user for later human review; `recall` retrieves the set of already-promoted memories, ranked by relevance to an optional query. Both tools operate on the same local store as the CLI.
+
+---
+
+## `remember`
+
+Stages a durable fact about the user into the pending queue. The fact is not immediately visible to `recall` — it must be promoted by the human operator via the CLI (or auto-promoted if your config enables it for low-risk kinds).
+
+**Return value:** A plain string confirming the staged memory ID, kind, and fact text.
+
+```text
+staged mem-0042: [tooling] I prefer pnpm over npm
+```
+
+### Parameters
+
+<ParamField body="fact" type="string" required>
+  The assertion to store. Write facts in the first person from the user's perspective — concise, declarative statements work best.
+
+  **Examples:**
+  - `"I prefer pnpm over npm"`
+  - `"My production Postgres runs on port 5433"`
+  - `"I'm allergic to shellfish"`
+</ParamField>
+
+<ParamField body="kind" type="string" default="preference">
+  Semantic category of the fact. Determines the risk tier and whether the memory can be auto-promoted. Must be one of the ten valid kind values listed in the table below.
+
+  | Value | Description | Risk tier |
+  |---|---|---|
+  | `preference` | Personal style and tool choices | 1 — auto |
+  | `tooling` | Language, framework, and build-tool decisions | 1 — auto |
+  | `project` | Project names, goals, and architectural choices | 1 — auto |
+  | `infra` | Infrastructure topology, ports, hostnames | 1 — auto |
+  | `identity` | Name, handles, pronouns, biographical facts | 3 — curated |
+  | `fiscal` | Billing, pricing, budget, financial preferences | 3 — curated |
+  | `people` | Contacts, teammates, relationships | 3 — curated |
+  | `constraint` | Hard requirements and non-negotiable rules | 3 — curated |
+  | `location` | Physical or geographic context | 3 — curated |
+  | `health` | Medical, dietary, or wellness information | 3 — curated |
+
+  <Warning>
+    Tier 3 (curated) kinds are **never** auto-promoted, even when `autopromote = true`. They always wait in the review queue for explicit CLI approval.
+  </Warning>
+</ParamField>
+
+<ParamField body="confidence" type="float" default="0.6">
+  The agent's confidence that this fact is accurate and durable, expressed as a value between `0.0` and `1.0`. Lower values surface the memory to human review sooner; high-confidence facts from a reliable source can be set closer to `1.0`.
+
+  Typical ranges:
+  - `0.5 – 0.7` — inferred from context, should be verified
+  - `0.8 – 0.9` — user stated explicitly, likely stable
+  - `1.0` — definitively confirmed, unlikely to change
+</ParamField>
+
+### Usage example
+
+```python
+# Pseudo-code showing how an agent would invoke the tool
+result = mcp.call_tool("remember", {
+    "fact": "I prefer pnpm over npm",
+    "kind": "tooling",
+    "confidence": 0.9
+})
+# → "staged mem-0017: [tooling] I prefer pnpm over npm"
+```
+
+<Note>
+  The returned ID (e.g. `mem-0017`) can be used in CLI commands to approve, reject, or inspect the specific pending memory: `engram approve mem-0017`.
+</Note>
+
+---
+
+## `recall`
+
+Returns the user's **promoted** memories, ranked by relevance. Pending, rejected, and stale memories are excluded. Pass a `query` string to focus the results on a specific topic; omit it to receive the most globally relevant memories up to the `limit`.
+
+**Return value:** A JSON array of memory objects, ordered from most to least relevant.
+
+### Parameters
+
+<ParamField query="query" type="string" default='""'>
+  A free-text search string used to rank and filter the returned memories. When empty, all promoted memories are returned sorted by a default relevance heuristic (recency + confidence). When non-empty, memories are re-ranked by token overlap with the query, and low-scoring results are filtered out.
+
+  **Examples:**
+  - `"database configuration"` — surfaces infra and project memories about databases
+  - `"my name"` — surfaces identity memories about the user's name
+  - `""` — returns all promoted memories up to the limit
+</ParamField>
+
+<ParamField query="limit" type="integer" default="20">
+  Maximum number of memories to return. The server applies this cap after ranking; the actual count may be lower if fewer promoted memories exist or if the query filters most results out.
+</ParamField>
+
+### Return format
+
+Each element in the returned array is a flat object with four fields:
+
+<ResponseField name="id" type="string">
+  Unique memory identifier assigned at staging time, e.g. `"mem-0001"`.
+</ResponseField>
+
+<ResponseField name="fact" type="string">
+  The stored assertion, exactly as submitted via `remember` or harvested from a transcript.
+</ResponseField>
+
+<ResponseField name="kind" type="string">
+  One of the ten kind values (`preference`, `tooling`, `project`, `infra`, `identity`, `fiscal`, `people`, `constraint`, `location`, `health`). See the [Schema reference](/reference/schema#kind) for full descriptions.
+</ResponseField>
+
+<ResponseField name="confidence" type="float">
+  Confidence score between `0.0` and `1.0` as set at capture time.
+</ResponseField>
+
+### Usage example
+
+```python
+# Retrieve up to 5 memories relevant to "package manager"
+memories = mcp.call_tool("recall", {
+    "query": "package manager",
+    "limit": 5
+})
+
+# Example response:
+# [
+#   {"id": "mem-0017", "fact": "I prefer pnpm over npm", "kind": "tooling", "confidence": 0.9},
+#   {"id": "mem-0023", "fact": "Node projects use Volta for version pinning", "kind": "tooling", "confidence": 0.8}
+# ]
+```
+
+```python
+# Retrieve all promoted memories (no filter)
+all_memories = mcp.call_tool("recall", {})
+
+# Returns up to 20 memories sorted by default relevance
+```
+
+<Tip>
+  For bulk context loading at the start of a session, prefer the `memory://recall` **resource** over the `recall` tool. The resource returns a pre-rendered text block that many clients can attach to the system prompt automatically without a tool call round-trip. See [MCP Resources](/reference/mcp/resources).
+</Tip>

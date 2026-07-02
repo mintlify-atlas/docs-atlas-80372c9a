@@ -1,0 +1,253 @@
+---
+title: "Storage Layout: Files, Formats, and Undo in Engram"
+sidebarTitle: "Storage"
+description: "A complete guide to Engram's store directory — memory.md, memory-log.md, the queue, audit.jsonl, .bak/ snapshots, and file permissions."
+---
+
+Engram stores everything in a single directory on your local filesystem. There are no background services, no cloud accounts, and no binary databases — just a small collection of plain text files you can read, edit, back up, and version-control with any tool you already use. This page explains what every file is, how it is formatted, and how the undo and backup mechanisms work.
+
+---
+
+## Store location
+
+The default store directory is:
+
+```
+~/.local/share/engram/
+```
+
+You can override this with the `ENGRAM_STORE` environment variable or the `store_dir` key in `engram.toml`. All relative paths on this page are relative to the store root.
+
+---
+
+## Directory layout
+
+```
+~/.local/share/engram/
+├── memory.md          # YAML frontmatter registry + generated Markdown body
+├── memory-log.md      # Append-only log of auto-appended (tier-1) memories
+├── queue/             # Pending candidates awaiting review
+│   ├── mem-0003.json
+│   ├── mem-0007.json
+│   └── _done/         # Resolved (promoted or rejected) queue items
+│       ├── mem-0001.json
+│       └── mem-0002.json
+├── audit.jsonl        # Append-only audit trail with timestamps and undo tokens
+└── .bak/              # Point-in-time snapshots for single-step undo
+    ├── memory.md.bak
+    └── memory.md.bak.2
+```
+
+<Note>
+The store directory is created with `0700` permissions (owner read/write/execute only). All files inside are created with `0600` permissions (owner read/write only). Engram refuses to start if it detects looser permissions on an existing store.
+</Note>
+
+---
+
+## `memory.md` — the primary registry
+
+`memory.md` is the heart of the store. It has two sections separated by the YAML frontmatter delimiters (`---`):
+
+1. **Frontmatter** — machine-managed YAML that is the authoritative source of truth for every promoted memory.
+2. **Body** — a human-readable Markdown section regenerated from the frontmatter on every `sync --apply` or `doctor --fix` run. **Do not hand-edit the body** — your changes will be overwritten. Edit the frontmatter instead.
+
+### Frontmatter structure
+
+```yaml
+---
+schema: memory.v1
+generated: 2026-01-15
+items:
+  - id: mem-0001
+    fact: "I prefer pnpm over npm"
+    kind: tooling
+    source: tool:remember
+    confidence: 0.6
+    learned_by: remember
+    learned_at: 2026-01-15
+    last_verified: null
+    decay: 180d
+    status: promoted
+    risk_tier: 1
+    dest: memory-log.md
+
+  - id: mem-0002
+    fact: "Monthly cloud budget is $200"
+    kind: fiscal
+    source: harvest:claude
+    confidence: 0.85
+    learned_by: harvest
+    learned_at: 2026-01-10
+    last_verified: 2026-01-15
+    decay: 365d
+    status: promoted
+    risk_tier: 3
+    dest: memory.md
+---
+```
+
+The `schema: memory.v1` header lets Engram detect the store version and run automatic migrations when the schema evolves.
+
+### Generated body section
+
+Below the closing `---`, Engram writes a plain-Markdown view of all promoted, non-stale memories, grouped by `kind`:
+
+```markdown
+## tooling
+
+- I prefer pnpm over npm *(mem-0001 · 2026-01-15)*
+
+## fiscal
+
+- Monthly cloud budget is $200 *(mem-0002 · 2026-01-10, verified 2026-01-15)*
+```
+
+This is the text that Engram injects into `AGENTS.md` / `CLAUDE.md` / `CURSOR.md` and exposes via the `memory://facts` MCP resource. Agents consume plain Markdown — they never see raw YAML.
+
+<Tip>
+You can safely read and copy from the body section. You can also edit the **frontmatter** directly in your editor — just make sure the YAML remains valid. Run `engram doctor` after manual edits to catch any validation errors.
+</Tip>
+
+---
+
+## `memory-log.md` — the append-only auto-capture log
+
+`memory-log.md` is a **newest-first, append-only log** for tier-1 memories that were routed directly without human review. It is intentionally separate from the main registry so you can quickly audit what Engram wrote on your behalf.
+
+```markdown
+# Memory Log
+
+<!-- mem-0008 | 2026-01-15T14:32:01Z -->
+- **tooling** We use Vitest for unit tests *(mem-0008)*
+
+<!-- mem-0006 | 2026-01-14T09:11:44Z -->
+- **preference** I prefer single quotes in Python *(mem-0006)*
+```
+
+Each entry is stamped with the memory `id` and an ISO 8601 timestamp in an HTML comment so automated tools can parse the log without disrupting the human-readable display.
+
+<Note>
+`memory-log.md` is not a source of truth for the memory schema — it is a display log. The canonical record for every memory, including those in the log, is the YAML frontmatter in `memory.md`. The log entries reference `id` values so you can cross-reference.
+</Note>
+
+---
+
+## `queue/` — pending review candidates
+
+Every staged memory that requires human review — all tier-3 memories and any conflict — is written to `queue/<mem-id>.json` as a **JSON envelope**. The envelope is a verbatim serialisation of the `Memory` model plus routing metadata:
+
+```json
+{
+  "id": "mem-0007",
+  "fact": "Production deploys require two approvals",
+  "kind": "constraint",
+  "source": "harvest:claude",
+  "confidence": 0.75,
+  "learned_by": "harvest",
+  "learned_at": "2026-01-15",
+  "last_verified": null,
+  "decay": "365d",
+  "status": "pending",
+  "risk_tier": 3,
+  "dest": null,
+  "routing": {
+    "reason": "curated_kind",
+    "conflict_with": null,
+    "staged_at": "2026-01-15T14:32:01Z"
+  }
+}
+```
+
+The `routing.reason` field tells you exactly why the memory was held: `curated_kind`, `conflict`, or `edits_curated_node`.
+
+### `queue/_done/`
+
+When you run `engram promote <id> --confirm` or `engram reject <id>`, the JSON file is moved from `queue/` to `queue/_done/` with `status` updated to `promoted` or `rejected`. Items in `_done/` are never surfaced during recall but are retained for audit and undo purposes.
+
+---
+
+## `audit.jsonl` — the append-only audit trail
+
+Every state-changing operation appends a line to `audit.jsonl`. The file is newline-delimited JSON (JSONL) and is never truncated or modified — only appended to.
+
+```jsonl
+{"ts":"2026-01-15T14:32:01Z","op":"auto_append","id":"mem-0001","tier":1,"undo_token":"bak-20260115T143201"}
+{"ts":"2026-01-15T14:35:10Z","op":"promote","id":"mem-0007","tier":3,"undo_token":"bak-20260115T143510"}
+{"ts":"2026-01-15T14:36:00Z","op":"reject","id":"mem-0009","tier":3,"undo_token":null}
+```
+
+| Field | Description |
+|---|---|
+| `ts` | ISO 8601 timestamp of the operation |
+| `op` | Operation name: `auto_append`, `promote`, `reject`, `harvest`, `undo` |
+| `id` | Memory ID affected |
+| `tier` | Risk tier at time of operation |
+| `undo_token` | Reference to the `.bak/` snapshot that can reverse this operation, or `null` if not reversible |
+
+---
+
+## `.bak/` — snapshots for single-step undo
+
+Before any write that modifies `memory.md` or `memory-log.md`, Engram writes a snapshot of the current file to `.bak/`. The snapshot filename matches the `undo_token` in `audit.jsonl`.
+
+```
+.bak/
+├── memory.md.bak               # most recent snapshot
+└── memory.md.bak.2             # one step older
+```
+
+To undo the last operation:
+
+```bash
+engram undo
+```
+
+Engram reads the most recent `undo_token` from `audit.jsonl`, restores the corresponding `.bak/` snapshot, and writes an `{"op":"undo"}` entry back to the audit log. Only the **single most recent** write operation can be undone this way — Engram is not a full revision-control system.
+
+<Warning>
+`.bak/` snapshots are overwritten on each new write. If you need full history, use Git (see below). `engram undo` is designed for "oops, I just promoted the wrong memory" situations, not long-term rollback.
+</Warning>
+
+---
+
+## File permissions
+
+| Path | Permissions | Rationale |
+|---|---|---|
+| `~/.local/share/engram/` | `0700` | Directory not visible to other users |
+| `memory.md` | `0600` | Contains curated personal facts |
+| `memory-log.md` | `0600` | May contain sensitive auto-captures |
+| `queue/*.json` | `0600` | Pending candidates may include fiscal/health data |
+| `audit.jsonl` | `0600` | Audit trail includes operation history |
+| `.bak/*.bak` | `0600` | Backup copies of sensitive files |
+
+Engram checks permissions on startup and refuses to load a store where any file or directory has world-readable (`o+r`) bits set.
+
+---
+
+## Backing up and syncing the store
+
+Because the store is plain files, you can protect and sync it with any tool:
+
+**Git:**
+```bash
+cd ~/.local/share/engram
+git init
+echo ".bak/" >> .gitignore
+git add memory.md memory-log.md audit.jsonl
+git commit -m "snapshot"
+```
+
+**Dropbox / iCloud Drive / Syncthing:**
+Point `ENGRAM_STORE` at a path inside your sync folder:
+```bash
+export ENGRAM_STORE="$HOME/Dropbox/engram"
+```
+
+<Accordion title="Sync conflict advice">
+If two machines write to the store simultaneously (e.g., via Dropbox), you may see a sync conflict file. Resolve it by keeping the version with the higher memory count and running `engram doctor` to check for inconsistencies. Because `audit.jsonl` and `memory-log.md` are append-only, they can usually be merged by concatenating the unique lines from both conflict versions.
+</Accordion>
+
+<Note>
+The `queue/` directory and `.bak/` directory are intentionally excluded from the example `.gitignore` above. You may choose to commit `queue/` if you want to synchronise pending reviews across machines, but `.bak/` snapshots are ephemeral and should not be tracked.
+</Note>

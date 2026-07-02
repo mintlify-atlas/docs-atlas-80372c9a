@@ -1,0 +1,98 @@
+---
+title: "Engram Architecture Reference: Layers, Modules, and Design"
+sidebarTitle: "Architecture"
+description: "A layer-by-layer walkthrough of Engram's internals: core store, capture pipeline, bridge promotion, recall ranking, and the CLI and MCP surfaces."
+---
+
+Engram is built as a set of narrow, composable layers. Each layer has a single responsibility; no layer skips past its neighbor to reach a deeper one. This design keeps the blast radius of changes small and makes it straightforward to replace one subsystem — say, the extractor LLM or the storage backend — without touching the rest of the stack.
+
+## Layer diagram
+
+```text
+cli/  mcp/        <- surfaces: a CLI and an MCP server
+  |     |
+recall/ bridge/   <- selection, ranking, context generation; promotion + review
+  |     |
+capture/ extract/ <- active remember + transcript harvest; pluggable extractor LLM
+  |     |
+       core/      <- schema, store, tiers, atomic write+undo, dedup, freshness
+```
+
+The two surface layers (`cli/` and `mcp/`) sit at the top. They are thin shells — argument parsing and protocol handling only — that delegate every substantive operation downward. The `core/` layer at the bottom never imports from any layer above it.
+
+---
+
+## Layer responsibilities
+
+### `core/` — Foundation
+
+The core layer owns the data model and all low-level store operations. Nothing outside `core/` talks directly to the filesystem.
+
+| Module | Responsibility |
+|---|---|
+| `schema.py` | `Memory` Pydantic model, `Kind`, `Status`, `LearnedBy` enums, `SCHEMA_VERSION` |
+| `store.py` | `MarkdownStore` — reads and writes the YAML-frontmatter `memory.md` and `memory-log.md` files |
+| `tiers.py` | Write-safety model: maps kinds to risk tiers, enforces `--confirm` for Tier 3 |
+| `atomic.py` | Temp-file + atomic rename writes, undo tokens, append-only `audit.jsonl` |
+| `dedup.py` | Token-overlap similarity and precision-token exact-match deduplication |
+| `freshness.py` | Parses `decay` strings (e.g. `"180d"`) and computes staleness dates |
+
+**Design decision — atomic writes with undo:** Every write goes through `atomic.py`. The module writes to a temp file, syncs, then renames into place (POSIX-atomic on most filesystems). It also records an undo token in `audit.jsonl` so that `engram undo` can reverse the last operation without a full diff.
+
+### `capture/` and `extract/` — Ingestion pipeline
+
+These two modules handle getting new facts into the pending queue.
+
+- **`capture/`** implements the active path: the `remember` MCP tool and `engram remember` CLI command call `_remember()` here. It validates the fact, assigns a `LearnedBy` of `remember`, resolves the risk tier, and writes the pending memory through `core/`.
+
+- **`extract/`** implements the passive path: transcript harvesting. It contains per-harness transcript readers (Claude Code `.jsonl` logs, Codex session files, opencode logs) and an LLM client that sends transcript chunks to a configurable extractor endpoint (LM Studio, Ollama, or any OpenAI-compatible API). Extracted facts are assigned `LearnedBy.harvest` and flow through the same `core/` write path.
+
+**Design decision — pluggable extractor:** The extractor is just an HTTP client pointed at an OpenAI-compatible `/chat/completions` endpoint. You can swap in any local or cloud model by changing `extractor.base_url` and `extractor.model` in the config file. Engram itself never bundles a model.
+
+### `bridge/` — Promotion and review
+
+The bridge layer is the human gate. It sits between raw pending memories and the promoted store.
+
+- **`promote.plan()`** takes a pending memory, runs it through `dedup.py` to detect conflicts with existing promoted memories, runs it through a classifier to confirm or adjust the `kind`, and routes it to the correct destination file (`memory.md` for Tier 3 curated items, `memory-log.md` for Tier 1 auto items).
+
+- **`promote.apply()`** executes the promotion if `autopromote = true` and the risk tier permits. For Tier 3 kinds it always pauses and enqueues for manual review.
+
+- **`review.approve()` / `review.reject()` / `review.forget()`** are the CLI-only paths for human decision-making. They update the memory's `status` field and write through `atomic.py`.
+
+**Design decision — no MCP promotion:** The MCP server has no path to `bridge/`. Agents can call `capture/` (via `remember`) but cannot call `bridge/` (via approve or reject). This single boundary is what makes the human-in-the-loop guarantee enforceable.
+
+### `recall/` — Selection and context generation
+
+The recall layer is responsible for answering the question: "given this user's promoted memories, what is most relevant right now?"
+
+- **`rank()`** takes the full list of promoted, non-stale memories and returns them ordered by a combination of query-string token overlap and recency×confidence score. The `recall` MCP tool and `engram recall` CLI command both call this function.
+
+- **`context.py`** renders the delimited `<!-- engram:begin --> ... <!-- engram:end -->` block consumed by the `memory://recall` MCP resource and written into `AGENTS.md` / `CLAUDE.md` context files by `engram sync`.
+
+### `cli/` and `mcp/` — Surfaces
+
+Both surface layers are intentionally thin.
+
+- **`cli/`** uses [Typer](https://typer.tiangolo.com/) to expose every user-facing command. It parses flags, formats output, and delegates to the appropriate inner layer. It is the only surface that can call `bridge/`.
+
+- **`mcp/`** uses [FastMCP](https://github.com/jlowin/fastmcp) to expose the two tools and one resource over stdio. It can call `capture/` (via `remember`) and `recall/` (via `recall` and `memory_recall`). It has no import path to `bridge/`.
+
+---
+
+## Key design decisions
+
+### Human gate via layer isolation
+
+The separation between the MCP surface and the `bridge/` layer is not a policy flag — it is a structural impossibility. The MCP server's import graph does not include `bridge/`. An agent exploiting the MCP tools cannot reach promotion or rejection code paths; those paths exist only in `cli/`.
+
+### Atomic writes and audit trail
+
+Every mutation to `memory.md` or `memory-log.md` goes through `atomic.py`'s temp-file rename path. This means a crash mid-write leaves the previous file intact. Each write also appends a JSON record to `audit.jsonl`, giving you an immutable log of every change and the undo token needed to reverse it.
+
+### Deduplication before promotion
+
+`bridge/promote.plan()` runs deduplication before writing. Two mechanisms work together: token-overlap similarity catches paraphrased duplicates ("I use pnpm" vs "I prefer pnpm over npm"), and precision-token matching catches near-identical facts that differ only in punctuation. Conflicting facts (same subject, different assertion) are always queued for manual review even when `autopromote = true`.
+
+### Pluggable extractor model
+
+The transcript harvester delegates fact extraction to an external LLM via an OpenAI-compatible API. Engram ships no weights and requires no specific provider — use LM Studio running locally, an Ollama server, or a remote endpoint. The model is configured with three fields: `base_url`, `model`, and optionally `api_key`.

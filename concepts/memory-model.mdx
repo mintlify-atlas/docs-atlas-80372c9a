@@ -1,0 +1,158 @@
+---
+title: "Memory Model: Fields, Kinds, and Status in Engram"
+sidebarTitle: "Memory Model"
+description: "A complete reference for every field in Engram's Memory struct — id, fact, kind, status, confidence, decay, and more — with YAML examples."
+---
+
+Every piece of information Engram stores is represented as a single **Memory** record. A memory is a typed, versioned assertion about you or your environment — things like "I prefer pnpm over npm" or "production deploys require two approvals." Understanding the shape of a memory helps you reason about what Engram captures, how it ages, and why certain fields drive routing and review decisions.
+
+## The Memory struct
+
+Engram uses a Pydantic model (`memory.v1`) to validate every record at capture time and again on load. All memories are serialised into the YAML frontmatter block of `memory.md` so they remain human-readable and diff-friendly.
+
+### Field reference
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `id` | `str` | auto (`mem-NNNN`) | Stable, sequential identifier assigned when the memory is first staged. Never reused. |
+| `fact` | `str` | *(required)* | The assertion text — a single, declarative sentence written in present tense. |
+| `kind` | `Kind` | `preference` | Semantic category that controls routing, tier assignment, and grouping in the body output. |
+| `source` | `str` | `"manual"` | Free-form origin label, e.g. `tool:remember`, `harvest:claude`, or `import:dotfiles`. |
+| `confidence` | `float` | `0.5` | Score between `0.0` and `1.0`. Harvested facts start lower; manually asserted facts can start at `1.0`. |
+| `learned_by` | `LearnedBy` | `manual` | How the memory was created: `harvest`, `remember`, `manual`, or `import`. |
+| `learned_at` | `date` | *(required)* | ISO 8601 date the memory was first recorded. Combined with `decay` to compute staleness. |
+| `last_verified` | `date \| null` | `null` | Updated whenever the memory is re-confirmed. `null` means it has never been verified since capture. |
+| `decay` | `str` | `"180d"` | Staleness horizon as a duration string (`"180d"`, `"365d"`, `"30d"`, etc.). |
+| `status` | `Status` | `pending` | Lifecycle state: `pending → promoted` or `pending → rejected`. Promoted facts stale into `stale`. |
+| `risk_tier` | `int` | `1` | Routing tier (`1`, `2`, or `3`) derived from `kind` and conflict detection. Controls whether human review is required. |
+| `dest` | `str \| null` | `null` | Target file path within the store. Set by the bridge when routing a memory — e.g. `memory-log.md`. |
+
+<Note>
+`id` values are assigned sequentially per store and are never reused, even after a memory is rejected. This keeps audit trails unambiguous.
+</Note>
+
+---
+
+## Kind values
+
+The `kind` field is the primary semantic tag on a memory. It determines which risk tier the memory lands in, how it is grouped in the `memory.md` body, and whether it can be auto-appended without human review.
+
+| Kind | Description | Example fact |
+|---|---|---|
+| `preference` | Personal workflow or tooling preferences | `"I prefer pnpm over npm"` |
+| `identity` | Names, handles, email addresses, account IDs | `"My GitHub handle is @alice"` |
+| `fiscal` | Budget constraints, billing accounts, cost limits | `"Monthly cloud budget is $200"` |
+| `people` | Collaborators, teams, contacts, reporting lines | `"Bob owns the payments service"` |
+| `project` | Active repos, milestones, tech-stack facts | `"The API is written in FastAPI"` |
+| `constraint` | Rules, policies, approval gates, hard limits | `"Production deploys require two approvals"` |
+| `infra` | Hosts, regions, cluster names, environment topology | `"Staging runs on us-east-1"` |
+| `tooling` | CLI tools, editors, package managers, build systems | `"We use Turborepo for the monorepo"` |
+| `health` | Medical, dietary, or physical context | `"No shellfish — allergy"` |
+| `location` | Offices, time zones, physical addresses | `"HQ is UTC+1 / London"` |
+
+<Warning>
+The kinds `identity`, `fiscal`, `people`, `constraint`, `location`, and `health` are **curated kinds** — they always route to the review queue regardless of any allowlist configuration. See [Risk Tiers](/concepts/risk-tiers) for details.
+</Warning>
+
+---
+
+## Status values
+
+Every memory moves through a simple state machine. Only `promoted` memories are surfaced during recall.
+
+| Status | Meaning | Transitions |
+|---|---|---|
+| `pending` | Staged candidate awaiting routing or review | → `promoted`, → `rejected` |
+| `promoted` | Accepted and active — surfaces during recall | → `stale` (time-based) |
+| `rejected` | Explicitly declined — never surfaces | terminal |
+| `stale` | Was promoted but has exceeded its `decay` horizon | re-confirm to reset |
+
+<Tip>
+Run `engram doctor` to get a report of all `stale` memories, low-confidence facts (below `0.5`), and unverified auto-captures. You can bulk-promote or bulk-reject stale memories in one pass.
+</Tip>
+
+---
+
+## Staleness and decay
+
+The `decay` field specifies how long a promoted memory remains fresh. Engram computes staleness with:
+
+```
+is_stale = (learned_at + decay_duration) < today
+```
+
+Re-confirming a memory — either by running `engram promote <id> --confirm` again or via `engram doctor --reverify` — updates `last_verified` to today and resets the staleness clock without changing `learned_at`.
+
+```
+learned_at: 2025-08-01   decay: 180d   →   stale after 2026-01-28
+last_verified: 2025-11-01               →   fresh until 2026-04-29
+```
+
+<Note>
+`last_verified` does **not** extend `learned_at`. The original capture date is immutable and preserved in the audit trail.
+</Note>
+
+---
+
+## YAML frontmatter in memory.md
+
+All promoted memories live in the YAML frontmatter block of `~/.local/share/engram/memory.md`. The block is machine-written but fully human-editable. The `schema: memory.v1` header lets Engram detect and migrate older stores automatically.
+
+```yaml
+---
+schema: memory.v1
+generated: 2026-01-15
+items:
+  - id: mem-0001
+    fact: "I prefer pnpm over npm"
+    kind: tooling
+    source: tool:remember
+    confidence: 0.6
+    learned_by: remember
+    learned_at: 2026-01-15
+    last_verified: null
+    decay: 180d
+    status: promoted
+    risk_tier: 1
+    dest: memory-log.md
+
+  - id: mem-0002
+    fact: "Monthly cloud budget is $200"
+    kind: fiscal
+    source: harvest:claude
+    confidence: 0.85
+    learned_by: harvest
+    learned_at: 2026-01-10
+    last_verified: 2026-01-15
+    decay: 365d
+    status: promoted
+    risk_tier: 3
+    dest: memory.md
+---
+```
+
+<Accordion title="Why YAML frontmatter instead of a database?">
+Engram deliberately avoids a binary database so the store is portable and version-controllable. You can `git diff` your memories, restore a snapshot with `git checkout`, sync them across machines via Dropbox or iCloud, and review them in any text editor. The generated body section below the frontmatter is always re-derived from the frontmatter items — you only need to hand-edit the frontmatter.
+</Accordion>
+
+---
+
+## The generated body section
+
+Below the YAML frontmatter, Engram writes a human-readable Markdown body grouped by `kind`. This section is **fully regenerated** on every `sync --apply` or `doctor --fix` run — do not write below the closing `---` by hand.
+
+```markdown
+---
+# (frontmatter above)
+---
+
+## tooling
+
+- I prefer pnpm over npm *(mem-0001 · 2026-01-15)*
+
+## fiscal
+
+- Monthly cloud budget is $200 *(mem-0002 · 2026-01-10, verified 2026-01-15)*
+```
+
+The body format is what Engram injects into `AGENTS.md` files and exposes as an MCP resource — agents read plain Markdown, not raw YAML.

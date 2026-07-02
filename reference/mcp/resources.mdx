@@ -1,0 +1,90 @@
+---
+title: "MCP Resource: memory://recall — Engram Reference"
+sidebarTitle: "Resources"
+description: "The memory://recall MCP resource returns a delimited plain-text block of promoted memories that clients auto-load into each session's context window."
+---
+
+The Engram MCP server exposes a single resource at the URI `memory://recall`. Unlike the `recall` tool — which an agent calls explicitly during a session — this resource is designed for **automatic context injection**: MCP clients that support resource auto-loading fetch it once at session start and attach the rendered block to the system prompt or context window before any tool calls happen.
+
+## Resource details
+
+| Property | Value |
+|---|---|
+| URI | `memory://recall` |
+| Transport | stdio (same process as the MCP server) |
+| MIME type | `text/plain` |
+| Content | Delimited plain-text block of promoted memories |
+| Refresh | Fetched fresh on each session start; not streamed or cached by the server |
+
+## Rendered block format
+
+The resource returns a compact plain-text block wrapped in HTML-style delimiter comments. The delimiters are stable and machine-readable, making it easy for post-processors or context managers to locate and update the block.
+
+```text
+<!-- engram:begin -->
+[preference] I prefer pnpm over npm
+[tooling] Node projects use Volta for version pinning
+[project] The main monorepo lives at ~/code/acme
+[infra] Production Postgres runs on port 5433
+[constraint] Never commit secrets to the repo — use 1Password references
+<!-- engram:end -->
+```
+
+Each line inside the delimiters follows the pattern `[<kind>] <fact>`. Only memories with `status: promoted` are included; pending, rejected, and stale memories are silently omitted. The ordering mirrors the default `recall` ranking: most relevant and most recent memories appear first.
+
+<Note>
+  The block intentionally omits IDs, confidence scores, and dates. This keeps it as compact as possible for injection into a context window. Use the `recall` tool if the agent needs the full metadata for a specific memory.
+</Note>
+
+## How clients auto-load the resource
+
+MCP clients that implement resource subscriptions or startup resource fetching will request `memory://recall` automatically. The Engram server handles this with a dedicated resource handler:
+
+```python
+@mcp.resource("memory://recall")
+def memory_recall() -> str:
+    """Compact memory context for the current user, for clients to auto-load."""
+    return render_block(_store().list())
+```
+
+The `render_block` function filters to promoted memories and formats each one as `[kind] fact`, then wraps the block in the `<!-- engram:begin -->` / `<!-- engram:end -->` delimiters.
+
+### Client behaviour by harness
+
+| Client | Auto-load behaviour |
+|---|---|
+| Claude Code | Attaches resource content to system context when listed in `.mcp.json` |
+| Codex | Attaches resource content to system context when listed in `~/.codex/config.toml` |
+| opencode | Attaches resource content to system context when listed in `opencode.json` |
+| Generic MCP client | Depends on client implementation; resource is always available for explicit fetch |
+
+<Tip>
+  If your client does not auto-load MCP resources, you can instruct the agent to call the `recall` tool at the start of each session as a manual alternative. The tool returns the same underlying data in structured JSON rather than the rendered text block.
+</Tip>
+
+## Full example output
+
+Below is a representative block for a user with a variety of promoted memories across multiple kinds:
+
+```text
+<!-- engram:begin -->
+[preference] I prefer dark mode in all editors and terminals
+[preference] I like verbose commit messages with a body paragraph
+[tooling] I prefer pnpm over npm
+[tooling] Node projects use Volta for version pinning
+[tooling] Python projects use uv for dependency management
+[project] The main monorepo lives at ~/code/acme
+[project] The public API is deployed at api.acme.dev
+[infra] Production Postgres runs on port 5433
+[infra] Redis sentinel cluster — never connect to replicas directly
+[constraint] Never commit secrets to the repo — use 1Password references
+<!-- engram:end -->
+```
+
+<Warning>
+  Sensitive kinds (`identity`, `fiscal`, `health`, `people`, `location`) are included in the block once promoted. If you promote a sensitive memory and later want to remove it from agent context, use `engram forget <id>` from the CLI to retract it immediately.
+</Warning>
+
+## Relationship to context files
+
+For agents that do not support MCP resources, Engram can generate equivalent static context files (`AGENTS.md`, `CLAUDE.md`) with the same rendered block embedded. These files are updated by `engram sync` and serve as a fallback for clients that read project-level context files instead of querying MCP at runtime. See the [Context Files guide](/guides/context-files) for details.

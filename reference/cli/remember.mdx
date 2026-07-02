@@ -1,0 +1,130 @@
+---
+title: "Remember & List: Stage and Browse All Engram Memories"
+sidebarTitle: "Remember & List"
+description: "Stage a new fact into Engram's pending queue with `remember`, then browse your memory store with `list`. Both are the primary capture interface."
+---
+
+The `remember` and `list` commands form the core capture loop of Engram. Use `remember` to push a single fact into the pending queue — it won't affect your active recall context until it clears review. Use `list` to inspect what Engram currently holds, filtered by lifecycle status or browsed in full. Both commands are also available as MCP tools so any compatible agent harness can invoke them automatically.
+
+---
+
+## `remember`
+
+Stages a single fact as a candidate memory. The fact lands in `pending` status and is not surfaced during recall until it is promoted, either automatically via `sync --apply` or manually with `promote --confirm`.
+
+```bash
+engram remember <fact> [--kind <kind>] [--confidence <float>]
+```
+
+### Arguments & Options
+
+<ParamField body="fact" type="string" required>
+  The assertion to stage. Pass as a quoted string. Example: `"I prefer pnpm over npm"`.
+</ParamField>
+
+<ParamField query="--kind" type="string" default="preference">
+  Semantic category of the memory. Controls routing, decay rules, and context rendering priority.
+
+  Valid values: `preference`, `identity`, `fiscal`, `people`, `project`, `constraint`, `infra`, `tooling`, `health`, `location`.
+</ParamField>
+
+<ParamField query="--confidence" type="float" default="0.6">
+  Initial confidence score in the range `0.0–1.0`. Memories below `0.5` are flagged by `doctor` as low-confidence.
+</ParamField>
+
+<ParamField query="-k" type="string">
+  Short alias for `--kind`.
+</ParamField>
+
+<ParamField query="-c" type="float">
+  Short alias for `--confidence`.
+</ParamField>
+
+### Example
+
+```bash
+engram remember "I prefer pnpm over npm" --kind tooling --confidence 0.9
+```
+
+```bash
+staged mem-0001: [tooling] I prefer pnpm over npm
+```
+
+<Note>
+  `remember` is also exposed as an MCP tool named `remember`. Any harness wired to the Engram MCP server (via `engram init`) can call it directly without leaving the agent loop.
+</Note>
+
+<Tip>
+  If you want a fact to bypass review entirely and land in recall immediately, run `engram sync --apply` right after staging. Ensure `autopromote` is enabled in your config or set `ENGRAM_AUTOPROMOTE=true` first.
+</Tip>
+
+---
+
+## `list`
+
+Lists all memories Engram knows about, optionally filtered to a single lifecycle status. This is a read-only command — it never modifies state.
+
+```bash
+engram list [--status <status>]
+```
+
+### Arguments & Options
+
+<ParamField query="--status" type="string" default="(all)">
+  Filter output to memories in the given lifecycle status.
+
+  Valid values: `pending`, `promoted`, `rejected`, `stale`.
+
+  Omit the flag to list every memory regardless of status.
+</ParamField>
+
+<ParamField query="-s" type="string">
+  Short alias for `--status`.
+</ParamField>
+
+### Output format
+
+Each row follows the pattern:
+
+```text
+<id>  [<status>/<kind>]  <fact>
+```
+
+### Examples
+
+List every memory across all statuses:
+
+```bash
+engram list
+```
+
+```bash
+mem-0001  [pending/tooling]     I prefer pnpm over npm
+mem-0002  [promoted/identity]   My primary language is TypeScript
+mem-0003  [rejected/preference] I prefer tabs over spaces
+mem-0004  [stale/project]       Active sprint ends 2024-02-15
+```
+
+List only memories awaiting review:
+
+```bash
+engram list --status pending
+```
+
+```bash
+mem-0001  [pending/tooling]  I prefer pnpm over npm
+```
+
+List only promoted memories:
+
+```bash
+engram list -s promoted
+```
+
+```bash
+mem-0002  [promoted/identity]  My primary language is TypeScript
+```
+
+<Warning>
+  `list` shows **all** memories including rejected and stale ones. For the clean, recall-ready set that agents actually see, use `engram recall` instead.
+</Warning>

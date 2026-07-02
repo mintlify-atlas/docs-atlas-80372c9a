@@ -1,0 +1,187 @@
+---
+title: "Engram Memory Schema Reference: Fields, Kinds, and YAML"
+sidebarTitle: "Schema"
+description: "Complete reference for Engram's Memory model: all fields, Kind and Status enums, risk tiers, source string formats, and the YAML frontmatter layout."
+---
+
+Every fact stored by Engram is represented as a `Memory` object defined in `src/engram/core/schema.py`. The schema version string `memory.v1` appears in the frontmatter of every storage file and is used to detect breaking changes on upgrade. This page documents all fields, enumerations, and the on-disk YAML format.
+
+## Schema version
+
+```python
+SCHEMA_VERSION = "memory.v1"
+```
+
+The version string is written into the `schema:` key of every `memory.md` and `memory-log.md` frontmatter block. Engram refuses to open a file whose schema version it does not recognise, preventing silent data corruption after a breaking upgrade.
+
+---
+
+## Memory model
+
+The `Memory` class is a [Pydantic](https://docs.pydantic.dev/) `BaseModel`. All fields are validated on construction.
+
+<ResponseField name="id" type="string">
+  Auto-assigned unique identifier in the format `mem-NNNN` (zero-padded four-digit sequence), e.g. `"mem-0001"`. Set to an empty string before the store assigns a permanent ID; never set manually.
+</ResponseField>
+
+<ResponseField name="fact" type="string" required>
+  The stored assertion. Should be a concise, first-person declarative statement about the user. This is the only field agents supply directly when calling the `remember` MCP tool.
+</ResponseField>
+
+<ResponseField name="kind" type="Kind" required>
+  Semantic category. Determines the risk tier and destination file. See the [Kind enum](#kind) table below for all valid values.
+</ResponseField>
+
+<ResponseField name="source" type="string" required>
+  Machine-readable string identifying how and where the fact was captured. See [Source string format](#source-string-format) below.
+</ResponseField>
+
+<ResponseField name="confidence" type="float" required>
+  Confidence score between `0.0` and `1.0`. Supplied by the agent or extractor at capture time. Used by `recall/rank()` as part of the relevance score. Lower-confidence memories decay faster.
+</ResponseField>
+
+<ResponseField name="learned_by" type="LearnedBy" required>
+  How the fact entered the system. See the [LearnedBy enum](#learnedby) table below.
+</ResponseField>
+
+<ResponseField name="learned_at" type="date" required>
+  ISO 8601 date (`YYYY-MM-DD`) on which the fact was first captured.
+</ResponseField>
+
+<ResponseField name="last_verified" type="date | null">
+  ISO 8601 date on which the fact was last confirmed as accurate, or `null` if it has never been explicitly verified. Used by `freshness.py` alongside `decay` to compute the staleness deadline.
+</ResponseField>
+
+<ResponseField name="decay" type="string" default='"180d"'>
+  Staleness horizon expressed as a duration string, e.g. `"180d"` (180 days), `"30d"`, `"365d"`. Parsed by `freshness.py`. When the time since `learned_at` (or `last_verified` if set) exceeds this value, the memory's status transitions to `stale` and it is excluded from `recall`.
+</ResponseField>
+
+<ResponseField name="status" type="Status" required>
+  Lifecycle state of the memory. See the [Status enum](#status) table below.
+</ResponseField>
+
+<ResponseField name="risk_tier" type="integer" required>
+  Write-safety tier assigned by `tiers.py` based on `kind`. Determines whether the memory can be auto-promoted and whether `--confirm` is required on CLI writes.
+
+  | Tier | Value | Behaviour |
+  |---|---|---|
+  | 1 | `TIER_AUTO_APPEND` | Auto-promoted when `autopromote = true` in config |
+  | 2 | `TIER_REGISTRY` | Promoted via registry check; conflicts queue for review |
+  | 3 | `TIER_CURATED` | Always requires explicit CLI approval; never auto-promoted |
+</ResponseField>
+
+<ResponseField name="dest" type="string | null">
+  Destination filename within the memory store directory. Either `"memory.md"` (Tier 3 curated, human-reviewed) or `"memory-log.md"` (Tier 1 auto-appended). Set by `bridge/promote.plan()` at promotion time; `null` while the memory is pending.
+</ResponseField>
+
+---
+
+## Kind
+
+The `Kind` enum defines the ten semantic categories a memory can belong to. The category controls both the risk tier and the destination file.
+
+| Value | Description | Risk tier | Auto-promote eligible |
+|---|---|---|---|
+| `preference` | Personal style and tool choices | 1 | ✅ |
+| `tooling` | Language, framework, and build-tool decisions | 1 | ✅ |
+| `project` | Project names, goals, and architectural decisions | 1 | ✅ |
+| `infra` | Infrastructure topology, ports, hostnames, services | 1 | ✅ |
+| `identity` | Name, handles, pronouns, biographical facts | 3 | ❌ |
+| `fiscal` | Billing, pricing, budget, and financial preferences | 3 | ❌ |
+| `people` | Contacts, teammates, and relationship context | 3 | ❌ |
+| `constraint` | Hard requirements and non-negotiable rules | 3 | ❌ |
+| `location` | Physical location, timezone, and geographic context | 3 | ❌ |
+| `health` | Medical, dietary, and wellness information | 3 | ❌ |
+
+<Note>
+  There is currently no Tier 2 kind in the default configuration. The `TIER_REGISTRY` constant is reserved for future use with custom kind registries.
+</Note>
+
+---
+
+## Status
+
+The `Status` enum tracks where a memory is in its lifecycle.
+
+| Value | Meaning |
+|---|---|
+| `pending` | Written by an agent or harvested from a transcript; awaiting human review or auto-promotion |
+| `promoted` | Approved (manually or automatically); included in `recall` results and the `memory://recall` resource |
+| `rejected` | Explicitly rejected via `engram reject`; excluded from all recall surfaces and never re-surfaced |
+| `stale` | Exceeded its `decay` horizon without being re-verified; excluded from recall until `engram verify <id>` is run |
+
+---
+
+## LearnedBy
+
+The `LearnedBy` enum records how a fact entered the system.
+
+| Value | Source |
+|---|---|
+| `remember` | Agent called the `remember` MCP tool or the user ran `engram remember` |
+| `harvest` | Extracted automatically from a session transcript by the extractor LLM |
+| `manual` | Typed directly by the user in a review or edit flow |
+| `import` | Imported from an external file via `engram import` |
+
+---
+
+## Source string format
+
+The `source` field is a colon-delimited string that identifies the capture origin. The following formats are used:
+
+| Pattern | Example | When used |
+|---|---|---|
+| `tool:remember` | `tool:remember` | Agent called the `remember` MCP tool |
+| `harness:<harness>:<project>` | `harness:codex:acme-api` | Harvested from a named harness's transcript for a specific project |
+| `import:<filename>` | `import:old-memory.md` | Imported from an external file |
+| `manual` | `manual` | Entered directly by the user via the CLI |
+
+---
+
+## YAML frontmatter format
+
+Memory files use a YAML frontmatter block at the top of the Markdown file. The `schema:` key is always `memory.v1`. The `items:` list contains one entry per memory.
+
+```yaml
+---
+schema: memory.v1
+generated: 2026-01-15
+items:
+  - id: mem-0001
+    fact: "I prefer pnpm over npm"
+    kind: tooling
+    source: tool:remember
+    confidence: 0.6
+    learned_by: remember
+    learned_at: 2026-01-15
+    last_verified: null
+    decay: 180d
+    status: promoted
+    risk_tier: 1
+    dest: memory-log.md
+
+  - id: mem-0002
+    fact: "My legal name is Alex Rivera"
+    kind: identity
+    source: manual
+    confidence: 1.0
+    learned_by: manual
+    learned_at: 2026-01-10
+    last_verified: 2026-01-15
+    decay: 365d
+    status: promoted
+    risk_tier: 3
+    dest: memory.md
+---
+```
+
+<Note>
+  `memory.md` holds Tier 3 curated memories (manually reviewed). `memory-log.md` holds the append-only log of Tier 1 auto-promoted memories. Both files use the same frontmatter schema; `dest` in each item records which file it belongs to for cross-file referencing.
+</Note>
+
+### Field serialisation notes
+
+- **Dates** are written as `YYYY-MM-DD` strings, not ISO 8601 datetimes. There is no time component.
+- **`last_verified: null`** is written literally as `null` (not omitted) to distinguish "never verified" from a missing field.
+- **`decay`** is written as a bare string without quotes, e.g. `180d`. Pydantic validates and parses this on load.
+- **`confidence`** is a float serialised to one or two decimal places; leading zero is always present (`0.6`, not `.6`).

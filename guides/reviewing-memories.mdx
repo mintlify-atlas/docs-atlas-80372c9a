@@ -1,0 +1,164 @@
+---
+title: "Reviewing, Promoting, and Managing Engram Memories"
+sidebarTitle: "Reviewing Memories"
+description: "Walk through the Engram review queue to promote or reject staged candidates, retract promoted facts, and audit your full memory store by status."
+---
+
+Engram never writes a memory directly into recall without human approval. Whether a candidate arrives from a live agent session via the `remember` tool or from a batch harvest, it lands in a **pending** queue first. This review step is your opportunity to catch anything sensitive, incorrect, or redundant before it influences future agent responses.
+
+## Memory statuses
+
+Every memory in Engram has one of four statuses:
+
+| Status | Meaning |
+|---|---|
+| `pending` | Staged, awaiting your review |
+| `promoted` | Approved — visible to agents via `memory://recall` |
+| `rejected` | Declined — excluded from recall but retained in history |
+| `stale` | Previously promoted but superseded or expired |
+
+Only `promoted` memories are returned during recall. Everything else is invisible to agents but remains in the audit log.
+
+## The review workflow
+
+<Steps>
+  <Step title="List pending items">
+    Start by seeing what is waiting for your review.
+
+    ```bash
+    engram queue
+    ```
+
+    Example output:
+
+    ```text
+    mem-0001  pending  tooling     I prefer pnpm over npm
+    mem-0002  pending  project     Uses a monorepo structure with shared tsconfig
+    mem-0003  pending  workflow    Always run tests before committing
+    ```
+
+    Each line shows the memory ID, status, inferred category, and a summary of the fact.
+  </Step>
+  <Step title="Inspect a specific memory">
+    Before approving or rejecting, read the full detail for any memory — including the original source and a diff showing what would change in recall.
+
+    ```bash
+    engram show mem-0001
+    ```
+
+    Example output:
+
+    ```text
+    id:         mem-0001
+    status:     pending
+    category:   tooling
+    confidence: 0.87
+    source:     harness:claude-code:my-app
+    created:    2024-11-14T10:32:01Z
+
+    content:
+      I prefer pnpm over npm
+
+    diff: (new — no existing memory in this category)
+    ```
+
+    If a memory would update or replace an existing promoted fact, the diff section shows what is being changed.
+  </Step>
+  <Step title="Promote or reject">
+    To approve the memory and make it available to agents:
+
+    ```bash
+    engram promote mem-0001 --confirm
+    ```
+
+    The `--confirm` flag is required to prevent accidental promotions. Output:
+
+    ```text
+    promoted mem-0001 → recall (tier-3)
+    ```
+
+    To decline a memory and keep it out of recall:
+
+    ```bash
+    engram reject mem-0001
+    engram reject mem-0002 --reason "Too vague to be actionable"
+    ```
+
+    The optional `--reason` flag is stored in the audit log and helps you remember why you declined a particular fact.
+  </Step>
+</Steps>
+
+<Note>
+  You can process the entire queue in a single pass by running `engram queue` to get the IDs, then promoting or rejecting each one. There is no batch-approve command — every promotion is intentional and requires `--confirm`.
+</Note>
+
+## Retracting a promoted memory with `engram forget`
+
+If you promoted a memory and later decide it should not influence the agent, use `engram forget` to remove it from recall.
+
+```bash
+engram forget mem-0001
+```
+
+Output:
+
+```text
+removed mem-0001 from recall (history and audit may retain it)  undo_token=tok_a3f9c2
+```
+
+The memory is immediately excluded from `memory://recall` responses. The `undo_token` printed in the output lets you reverse the action if you change your mind.
+
+<Warning>
+  `engram forget` removes the memory from active recall but **does not purge it from history or the audit log**. The fact that it existed, when it was promoted, and when it was retracted are all retained. If you need a hard delete for compliance reasons, consult the data management documentation.
+</Warning>
+
+## Listing all memories by status
+
+Use `engram list` to see your full memory store, with an optional filter by status.
+
+```bash
+# List everything
+engram list
+
+# List only promoted memories
+engram list --status promoted
+
+# List rejected memories
+engram list --status rejected
+```
+
+Example output for `engram list --status promoted`:
+
+```text
+mem-0001  promoted  tooling   I prefer pnpm over npm
+mem-0004  promoted  project   Uses monorepo structure with shared tsconfig
+mem-0007  promoted  workflow  Always run tests before committing
+```
+
+This is useful for auditing what the agent currently knows, or for identifying stale memories that should be retracted.
+
+## Checking for drift with a dry-run
+
+If you want to see what `engram sync` would do without actually changing anything, pass the `--dry-run` flag.
+
+```bash
+engram sync --dry-run
+```
+
+Example output:
+
+```text
+[dry-run] would promote  mem-0009  tooling   Prefer vitest over jest
+[dry-run] would mark stale  mem-0002  project   Old monorepo note superseded by mem-0008
+no changes written
+```
+
+<Tip>
+  Run `engram sync --dry-run` after a large harvest to preview the effect before you start reviewing individual items. It surfaces potential conflicts and stale memories before they become problems.
+</Tip>
+
+## Next steps
+
+- [Context Files](/guides/context-files) — write promoted memories into `AGENTS.md` for non-MCP agents.
+- [Harvesting Sessions](/guides/harvesting-sessions) — backfill the queue from existing transcripts.
+- [Wiring Agents](/guides/wiring-agents) — connect agents so they read promoted memories automatically.

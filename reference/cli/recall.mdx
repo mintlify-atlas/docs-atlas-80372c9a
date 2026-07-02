@@ -1,0 +1,182 @@
+---
+title: "Recall & Gen-Context: Query and Inject Agent Memory"
+sidebarTitle: "Recall & Gen-Context"
+description: "Search promoted memories with `recall` and generate a context block for AGENTS.md or CLAUDE.md with `gen-context`. Both surface only fresh, promoted facts."
+---
+
+Once memories are promoted, two commands make them useful in practice. `recall` gives you an interactive search interface: pass a keyword query and Engram returns the best-matching promoted facts, ranked by token overlap and confidence. `gen-context` goes a step further — it renders all top memories into a structured block that you can embed directly into `AGENTS.md` or `CLAUDE.md`, so every new agent session starts with the right context pre-loaded. Both commands operate exclusively on `promoted` + non-stale memories.
+
+---
+
+## `recall`
+
+Searches promoted memories and returns the best matches, ranked by keyword overlap with the query and then by confidence score. When called with no query, it returns the top memories by confidence alone — useful for a quick health-check of what agents currently see.
+
+```bash
+engram recall [<query>] [--limit <n>]
+```
+
+### Arguments & Options
+
+<ParamField body="query" type="string">
+  Optional keyword query string. Engram tokenizes the query and ranks promoted memories by token overlap, breaking ties with confidence score. Omit to retrieve top memories sorted by confidence only.
+</ParamField>
+
+<ParamField query="--limit" type="integer" default="20">
+  Maximum number of results to return. Increase for broader exploration; lower for tight context windows.
+</ParamField>
+
+<ParamField query="-n" type="integer">
+  Short alias for `--limit`.
+</ParamField>
+
+### Output format
+
+Each result follows the pattern:
+
+```text
+<id>  [<kind>]  <fact>
+```
+
+Results are sorted: highest token-overlap with the query first, then descending confidence.
+
+### Examples
+
+Recall everything (top 20 by confidence):
+
+```bash
+engram recall
+```
+
+```bash
+mem-0002  [identity]    My primary language is TypeScript
+mem-0001  [tooling]     I prefer pnpm over npm
+mem-0005  [preference]  I prefer 2-space indentation
+mem-0008  [infra]       Production runs on AWS us-east-1
+```
+
+Recall with a keyword query:
+
+```bash
+engram recall "package manager"
+```
+
+```bash
+mem-0001  [tooling]  I prefer pnpm over npm
+```
+
+Recall with a query and a custom limit:
+
+```bash
+engram recall typescript --limit 5
+```
+
+```bash
+mem-0002  [identity]  My primary language is TypeScript
+mem-0011  [project]   The API is written in TypeScript + Fastify
+```
+
+<Note>
+  `recall` only surfaces memories with `status: promoted` that are within their freshness horizon (non-stale). Use `engram list --status stale` to see what has aged out and `engram doctor` to understand why.
+</Note>
+
+<Tip>
+  The `recall` command is also available as an MCP tool. When an agent session is connected to `engram serve`, the harness can invoke `recall` autonomously to fetch context mid-conversation without any user interaction.
+</Tip>
+
+---
+
+## `gen-context`
+
+Renders the top promoted memories into an `<!-- engram -->` block formatted for `AGENTS.md` or `CLAUDE.md`. Printed to stdout by default; use `--write` to atomically upsert the block directly into an existing file. Subsequent runs replace the previous block rather than appending.
+
+```bash
+engram gen-context [--write <path>] [--limit <n>]
+```
+
+### Arguments & Options
+
+<ParamField query="--write" type="path">
+  Path to the file to upsert the memory block into. Engram performs an atomic write and replaces any existing `<!-- engram -->…<!-- /engram -->` block. If the file has no existing block, the content is appended. Example: `./AGENTS.md`.
+</ParamField>
+
+<ParamField query="--limit" type="integer" default="30">
+  Maximum number of memories to include in the generated block.
+</ParamField>
+
+<ParamField query="-w" type="path">
+  Short alias for `--write`.
+</ParamField>
+
+<ParamField query="-n" type="integer">
+  Short alias for `--limit`.
+</ParamField>
+
+### Output
+
+Without `--write`, the rendered block is printed to stdout:
+
+```bash
+engram gen-context
+```
+
+```markdown
+<!-- engram -->
+## Agent Memory (engram)
+
+> identity: My primary language is TypeScript
+> tooling: I prefer pnpm over npm
+> preference: I prefer 2-space indentation
+> infra: Production runs on AWS us-east-1
+<!-- /engram -->
+```
+
+With `--write`, Engram upserts the block and confirms:
+
+```bash
+engram gen-context --write ./AGENTS.md
+```
+
+```bash
+updated AGENTS.md
+```
+
+### Examples
+
+Print the memory block to stdout (preview before writing):
+
+```bash
+engram gen-context
+```
+
+Write directly into `AGENTS.md`:
+
+```bash
+engram gen-context --write ./AGENTS.md
+```
+
+```bash
+updated AGENTS.md
+```
+
+Write into `CLAUDE.md` with a smaller limit for a tighter context window:
+
+```bash
+engram gen-context -w ./CLAUDE.md -n 15
+```
+
+```bash
+updated CLAUDE.md
+```
+
+<Tip>
+  Add `engram gen-context --write ./AGENTS.md` as a post-`sync` step in your workflow (or a git pre-commit hook) to keep your context file always in sync with your latest promoted memories.
+</Tip>
+
+<Note>
+  The `--write` path must already exist or be a writable location. Engram does **not** create parent directories. If the target file is new, create it first (even as an empty file) before running `gen-context --write`.
+</Note>
+
+<Warning>
+  The upsert is atomic but it **replaces** the entire `<!-- engram -->` block on each run. Any manual edits you make inside that block will be overwritten the next time `gen-context --write` runs. Keep your custom notes outside the engram-managed section.
+</Warning>

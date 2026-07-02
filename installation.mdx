@@ -1,0 +1,114 @@
+---
+title: "Installing Engram: uv, pipx, and Local Clone Methods"
+sidebarTitle: "Installation"
+description: "Install the Engram memory CLI on Python 3.11+ using uv tool install, pipx, or a local clone. Covers both entry points and post-install verification."
+---
+
+Engram is a Python CLI tool that requires Python 3.11 or newer. It is not yet published to PyPI, so all install methods pull directly from the GitHub repository or from a local clone. Once installed, two entry points become available on your `PATH`: `engram` for the main CLI and `engram-mcp` for the standalone MCP server process.
+
+<Note>
+  Engram is not yet available on PyPI. Do not run `pip install engram` or `uv add engram` — those will either fail or install an unrelated package. Use one of the three methods below.
+</Note>
+
+## Requirements
+
+| Requirement | Minimum version |
+|---|---|
+| Python | 3.11 |
+| `uv` (if using uv method) | any recent release |
+| `pipx` (if using pipx method) | any recent release |
+
+Engram's runtime dependencies (`fastmcp`, `pydantic`, `httpx`, `typer`, `pyyaml`) are installed automatically by all three methods — you do not need to manage them separately.
+
+## Install Methods
+
+<CodeGroup>
+
+```bash uv (recommended)
+uv tool install git+https://github.com/xantorres/engram
+```
+
+```bash pipx
+pipx install git+https://github.com/xantorres/engram
+```
+
+```bash Clone and install
+git clone https://github.com/xantorres/engram
+cd engram
+uv tool install .
+```
+
+</CodeGroup>
+
+**uv** is the recommended method. `uv tool install` creates an isolated virtual environment, resolves dependencies, and links both entry points onto your `PATH` in a single command. No manual environment activation is needed afterward.
+
+**pipx** follows the same isolated-environment pattern and is a good choice if you already use it to manage other Python CLI tools.
+
+**Clone and install locally** is the right choice if you want to inspect the source, run the test suite, or make local modifications before installing. After cloning, `uv tool install .` (run from inside the repo directory) installs from the local source tree.
+
+<Tip>
+  If you plan to modify Engram's source code regularly, you can instead run `uv run engram` directly from within the cloned repository without a global install. This keeps your edits active without reinstalling after each change.
+</Tip>
+
+## Verify the Installation
+
+After any of the three install methods, confirm that both entry points are on your `PATH`:
+
+```bash
+engram version
+```
+
+You should see the current version string printed to stdout. If the command is not found, check that your tool bin directory is on `PATH`:
+
+- **uv tools:** typically `~/.local/bin` (run `uv tool dir --bin` to confirm)
+- **pipx:** typically `~/.local/bin` (run `pipx ensurepath` if needed)
+
+## Entry Points
+
+Installing Engram registers two executables:
+
+| Command | Entry point | Purpose |
+|---|---|---|
+| `engram` | `engram.cli.main:main` | Main CLI — remember, recall, promote, harvest, and all other subcommands |
+| `engram-mcp` | `engram.mcp.server:main` | Standalone MCP server process (stdio) used by `engram serve` and agent config snippets |
+
+You will interact with `engram` directly for all day-to-day operations. The `engram-mcp` entry point is invoked automatically by your agent harness once you wire it in via `engram init` — you generally don't need to call it by hand.
+
+## Runtime Dependencies
+
+These packages are resolved and installed automatically. They are listed here for reference:
+
+| Package | Minimum version |
+|---|---|
+| `fastmcp` | 2.3 |
+| `pydantic` | 2.6 |
+| `httpx` | 0.27 |
+| `typer` | 0.12 |
+| `pyyaml` | 6 |
+
+## Upgrading
+
+To upgrade to the latest commit from GitHub, re-run the same install command. Both `uv tool install` and `pipx install` accept a `--force` flag to overwrite the existing install:
+
+<CodeGroup>
+
+```bash uv
+uv tool install --force git+https://github.com/xantorres/engram
+```
+
+```bash pipx
+pipx install --force git+https://github.com/xantorres/engram
+```
+
+</CodeGroup>
+
+If you installed from a local clone, pull the latest changes and reinstall:
+
+```bash
+git pull
+uv tool install --force .
+```
+
+## Next Steps
+
+With Engram installed and verified, follow the [Quickstart](/quickstart) to capture your first memories, run the promotion bridge, and wire Engram into your coding agent.

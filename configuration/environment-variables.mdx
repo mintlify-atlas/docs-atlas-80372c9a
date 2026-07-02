@@ -1,0 +1,207 @@
+---
+title: "Engram Environment Variables: Full Reference Guide"
+sidebarTitle: "Env Variables"
+description: "All seven Engram environment variables, their config-file equivalents, defaults, and shell examples — including ENGRAM_AUTOPROMOTE truthy values."
+---
+
+Environment variables give you a runtime escape hatch for every setting in `config.toml`. They are the right tool when you need per-session overrides, CI/CD pipelines, Docker containers, or secret injection without touching a file on disk. An environment variable always wins over the corresponding config-file key — no restart required.
+
+<Note>
+  Precedence order (highest to lowest): **environment variable → config file value → built-in default**. Only the highest-precedence source that is set takes effect.
+</Note>
+
+---
+
+## Variable reference
+
+| Variable | Config equivalent | Type | Default | Description |
+|---|---|---|---|---|
+| `ENGRAM_CONFIG` | *(config file path)* | string | `~/.config/engram/config.toml` | Absolute path to the TOML config file Engram reads at startup. |
+| `ENGRAM_STORE` | `store.dir` | string | `~/.local/share/engram` | Directory Engram uses to persist the memory store. |
+| `ENGRAM_EXTRACTOR_URL` | `extractor.base_url` | string | `http://localhost:1234/v1` | Base URL of the OpenAI-compatible extraction endpoint. |
+| `ENGRAM_EXTRACTOR_MODEL` | `extractor.model` | string | `local-model` | Model identifier sent in every extraction request. |
+| `ENGRAM_EXTRACTOR_KEY` | `extractor.api_key` | string | *(none)* | API key sent in `Authorization: Bearer`. Never written to the store. |
+| `ENGRAM_AUTOPROMOTE` | `bridge.autopromote` | boolean string | `false` | When truthy, `engram sync --apply` writes facts instead of dry-running. |
+| `ENGRAM_BRIDGE_KIND_ALLOWLIST` | `bridge.kind_allowlist` | comma-separated string | *(none)* | Restrict automatic promotion to these memory kinds only. |
+
+---
+
+## Variable details
+
+### `ENGRAM_CONFIG`
+
+Overrides the config file path entirely. Engram will read — and validate — the file at the path you supply instead of the default `~/.config/engram/config.toml`. Useful for maintaining separate profiles or running integration tests with a clean config.
+
+```bash
+ENGRAM_CONFIG=~/engram-work.toml engram sync
+```
+
+---
+
+### `ENGRAM_STORE`
+
+Redirects the entire memory store to a different directory. Engram creates the directory on first write if it does not exist. All store subdirectories and files inherit the `0700` / `0600` permission policy regardless of where the store is located.
+
+```bash
+ENGRAM_STORE=~/vault/engram engram recall
+```
+
+---
+
+### `ENGRAM_EXTRACTOR_URL`
+
+Sets the base URL of the OpenAI-compatible chat completions endpoint used during `engram harvest`. Common values:
+
+| Inference server | Value |
+|---|---|
+| LM Studio (default) | `http://localhost:1234/v1` |
+| Ollama | `http://localhost:11434/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+
+```bash
+ENGRAM_EXTRACTOR_URL=http://localhost:11434/v1 engram harvest session.md
+```
+
+---
+
+### `ENGRAM_EXTRACTOR_MODEL`
+
+Forwarded verbatim as the `model` field in every extraction API request. Must match an identifier the inference server recognises.
+
+```bash
+ENGRAM_EXTRACTOR_MODEL=llama3.2 engram harvest session.md
+```
+
+---
+
+### `ENGRAM_EXTRACTOR_KEY`
+
+The API key for authenticated inference endpoints. Setting it via environment variable is the recommended approach — it avoids writing secrets to `config.toml` and keeps the key out of disk-backed files entirely. Engram reads this value at startup and holds it only in memory.
+
+```bash
+ENGRAM_EXTRACTOR_KEY=sk-... engram harvest session.md
+```
+
+<Warning>
+  Never commit `ENGRAM_EXTRACTOR_KEY` to version control. Prefer your shell's secret management (e.g. 1Password CLI, `pass`, or a CI/CD secret store) over storing the value in a `.env` file that might be checked in.
+</Warning>
+
+---
+
+### `ENGRAM_AUTOPROMOTE`
+
+Controls whether `engram sync --apply` performs real writes or stays in dry-run mode. The default is `false` — a deliberate safety gate.
+
+**Accepted truthy values** (case-insensitive):
+
+| Value | Accepted as `true` |
+|---|---|
+| `1` | ✅ |
+| `true` | ✅ |
+| `yes` | ✅ |
+| `on` | ✅ |
+| `0`, `false`, `no`, `off`, *(unset)* | ❌ (dry-run) |
+
+```bash
+# Enable autopromote for a single sync
+ENGRAM_AUTOPROMOTE=true engram sync --apply
+
+# Equivalent values
+ENGRAM_AUTOPROMOTE=1 engram sync --apply
+ENGRAM_AUTOPROMOTE=yes engram sync --apply
+```
+
+<Note>
+  Even with `ENGRAM_AUTOPROMOTE=true`, tier-3 (curated-kind) facts and conflict-detected facts are never written automatically. They remain in the review queue until you run `engram queue review` with `--confirm`.
+</Note>
+
+---
+
+### `ENGRAM_BRIDGE_KIND_ALLOWLIST`
+
+A comma-separated list of memory-kind identifiers. When set, the bridge only auto-promotes facts whose kind appears in the list. Whitespace around commas is ignored.
+
+**Valid (auto-promotable) kinds:**
+```text
+preference   tooling   project   infra
+```
+
+**Curated kinds that may NOT be included** (raises `ConfigError` at startup):
+```text
+identity   fiscal   people   constraint   location   health
+```
+
+```bash
+# Promote only preference and tooling facts automatically
+ENGRAM_BRIDGE_KIND_ALLOWLIST="preference,tooling" engram sync --apply
+
+# Allow all non-curated kinds (omit the variable entirely)
+unset ENGRAM_BRIDGE_KIND_ALLOWLIST
+```
+
+---
+
+## Per-shell export examples
+
+Add these to your `~/.bashrc`, `~/.zshrc`, or equivalent to make settings permanent for your login shell.
+
+```bash
+# ~/.zshrc or ~/.bashrc
+
+# Use a fast local Ollama model for extraction
+export ENGRAM_EXTRACTOR_URL="http://localhost:11434/v1"
+export ENGRAM_EXTRACTOR_MODEL="llama3.2"
+
+# Store memories in a custom directory
+export ENGRAM_STORE="$HOME/vault/engram"
+
+# Keep the API key out of config.toml
+export ENGRAM_EXTRACTOR_KEY="sk-..."
+```
+
+---
+
+## `.env` file example
+
+If you use a tool like [`direnv`](https://direnv.net/) or load `.env` files in your workflow, the following snippet covers a typical cloud-provider setup:
+
+```bash
+# .env  — DO NOT COMMIT if ENGRAM_EXTRACTOR_KEY is set
+
+ENGRAM_EXTRACTOR_URL=https://api.openai.com/v1
+ENGRAM_EXTRACTOR_MODEL=gpt-4o
+ENGRAM_EXTRACTOR_KEY=sk-your-secret-key-here
+ENGRAM_AUTOPROMOTE=false
+```
+
+<Tip>
+  Add `.env` to your `.gitignore` whenever it contains `ENGRAM_EXTRACTOR_KEY`. For shared repos, prefer a `.env.example` file with the key value left blank so teammates know to supply their own.
+</Tip>
+
+---
+
+## CI/CD example (GitHub Actions)
+
+```yaml
+# .github/workflows/harvest.yml
+- name: Harvest session facts
+  env:
+    ENGRAM_EXTRACTOR_URL: https://api.openai.com/v1
+    ENGRAM_EXTRACTOR_MODEL: gpt-4o
+    ENGRAM_EXTRACTOR_KEY: ${{ secrets.OPENAI_API_KEY }}
+    ENGRAM_STORE: /tmp/engram-ci
+    ENGRAM_AUTOPROMOTE: "false"
+  run: engram harvest session.jsonl
+```
+
+---
+
+## Precedence recap
+
+```text
+ENGRAM_STORE (set)           ← wins
+  └─ store.dir in config.toml (set)    ← wins over default
+       └─ ~/.local/share/engram        ← built-in default (lowest)
+```
+
+If both the environment variable and the config file key are unset, Engram uses the built-in default. There is no merging — the highest-priority source that is present provides the entire value.

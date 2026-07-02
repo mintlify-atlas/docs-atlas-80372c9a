@@ -1,0 +1,111 @@
+---
+title: "Harvesting Agent Session Transcripts into Engram Memory"
+sidebarTitle: "Harvesting Sessions"
+description: "Extract durable facts from past agent transcripts with engram harvest, including filtering, deduplication, and source attribution."
+---
+
+Harvesting is Engram's passive capture path. Instead of waiting for an agent to call the `remember` tool during a live session, you point `engram harvest` at a saved transcript file and Engram extracts candidate memories from the conversation automatically. This lets you seed your memory store from work you have already done — no retroactive prompting required.
+
+## Supported harnesses and transcript locations
+
+Each supported agent writes its session transcripts to a well-known location on disk. Engram knows how to read all of them.
+
+| Harness | Transcript location |
+|---|---|
+| `claude-code` | `~/.claude/projects/<project-slug>/<session-id>.jsonl` |
+| `codex` | `.jsonl` session files in your Codex data directory |
+| `opencode` | `.jsonl` session files in your opencode data directory |
+
+All three formats use newline-delimited JSON (`.jsonl`). The `claude-code` reader locates files under the global `~/.claude/projects/` tree, keyed by a slug derived from your project path. Codex and opencode readers accept an explicit path to any `.jsonl` file.
+
+## Running a harvest
+
+```bash
+engram harvest <path> [--harness HARNESS] [--min-confidence FLOAT]
+```
+
+The `<path>` argument is the path to a transcript file. The `--harness` flag tells Engram which reader to use; it defaults to `claude-code`. The `--min-confidence` flag sets a minimum extraction confidence score (0.0–1.0) and defaults to `0.5`.
+
+### Examples
+
+```bash
+# Harvest a Claude Code session using defaults
+engram harvest ~/.claude/projects/my-app/abc123.jsonl
+
+# Harvest a Codex session explicitly
+engram harvest .codex/sessions/session-42.jsonl --harness codex
+
+# Raise the confidence threshold to reduce noise
+engram harvest ~/.claude/projects/my-app/abc123.jsonl --min-confidence 0.7
+```
+
+After a successful harvest you will see a summary line:
+
+```text
+staged 3 candidate(s) from /home/user/.claude/projects/my-app/abc123.jsonl (skipped dupe=2 trivial=1)
+```
+
+The numbers tell you how many candidates were staged for review, how many were dropped as duplicates, and how many were dropped as trivial.
+
+## Filtering: what gets dropped before staging
+
+Engram applies two layers of filtering before a candidate reaches the review queue.
+
+**Trivial content** is discarded automatically. A candidate is considered trivial if it is fewer than 20 characters, consists only of a bare filesystem path, or matches known noise patterns like `"user identifier is X"`. These fragments carry no useful signal.
+
+**Duplicates** are suppressed at two levels. First, candidates are checked against your existing memory store — if the same fact is already promoted or pending, the new extraction is dropped. Second, duplicates within the same harvest batch are collapsed so the same fact extracted from multiple turns of a conversation is only staged once.
+
+<Note>
+  Filtering happens before the candidate reaches the review queue. You will never see trivial or duplicate entries in `engram queue` — the counts in the harvest summary are the only record that they existed.
+</Note>
+
+## The `--min-confidence` flag
+
+The extractor assigns each candidate a confidence score between 0.0 and 1.0 representing how strongly the model believes the extracted fact is a genuine, durable preference or decision. Setting `--min-confidence` higher reduces the number of staged candidates and tends to surface only the clearest signals.
+
+```bash
+# Default: stage anything above 0.5
+engram harvest session.jsonl
+
+# Strict: only high-confidence extractions
+engram harvest session.jsonl --min-confidence 0.8
+```
+
+<Tip>
+  Start with the default `0.5` threshold on your first harvest and raise it if you find the queue filling with low-quality candidates. You can re-harvest the same file with a stricter threshold at any time — existing staged candidates will be deduplicated away.
+</Tip>
+
+## Source attribution
+
+Every extracted memory is tagged with a source identifier in the format:
+
+```
+harness:<harness>:<project>
+```
+
+For example, a fact extracted from a Claude Code session in the `my-app` project would carry the source `harness:claude-code:my-app`. This means the same fact learned from two different repositories is stored as two distinct memories, keeping per-project context cleanly separated.
+
+Source attribution also powers deduplication: a promoted memory from `harness:claude-code:my-app` will not suppress an identical fact harvested from `harness:codex:other-project`.
+
+## Extractor configuration
+
+`engram harvest` delegates the actual extraction to an LLM extractor. Before you can run a harvest you need to configure which model to use. If the extractor is not yet configured, the command will exit with a message pointing you to the configuration step.
+
+```bash
+# Check current extractor config
+engram config show
+
+# Set an extractor model (example — see your installation docs for supported models)
+engram config set extractor.model gpt-4o-mini
+```
+
+<Warning>
+  Harvesting sends transcript content to the configured LLM extractor. Avoid harvesting sessions that contain secrets, credentials, or other sensitive data you do not want sent to an external API.
+</Warning>
+
+## Next steps
+
+Once candidates are staged, move on to the review queue to approve or reject them before they enter recall.
+
+- [Reviewing Memories](/guides/reviewing-memories) — promote, reject, or forget staged candidates.
+- [Wiring Agents](/guides/wiring-agents) — connect agents so they can write memories live during sessions.

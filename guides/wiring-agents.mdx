@@ -1,0 +1,121 @@
+---
+title: "Wiring Claude Code, Codex, and opencode to Engram MCP"
+sidebarTitle: "Wiring Agents"
+description: "Register engram-mcp as an MCP server in Claude Code, Codex, or opencode so every agent session can read and write persistent memory across conversations."
+---
+
+Wiring an agent means registering `engram-mcp` as a Model Context Protocol server inside that agent's configuration file. Once wired, the agent gains a `remember` tool it can call to store facts and a `memory://recall` resource it can read at the start of any session — giving it durable, project-scoped memory across conversations without any changes to your prompts.
+
+## How wiring works
+
+Engram ships a small MCP server called `engram-mcp`. It speaks the standard MCP stdio protocol, so any MCP-capable agent can connect to it. When the agent starts, it spawns `engram-mcp` as a subprocess over stdin/stdout. From that point the agent can:
+
+- Call the **`remember`** tool to stage a new memory for review.
+- Read the **`memory://recall`** resource to get a ranked list of relevant memories injected into its context window.
+
+The fastest way to get the correct config snippet for your agent is `engram init`:
+
+```bash
+engram init claude-code   # prints .mcp.json snippet
+engram init codex         # prints TOML snippet
+engram init opencode      # prints JSON snippet
+```
+
+Run the command, paste the output into the right config file, and restart your agent. The sections below show exactly where each snippet goes.
+
+## Agent configuration
+
+<Tabs>
+  <Tab title="Claude Code">
+    Place the following in `.mcp.json` at your project root for a per-project setup, or in `~/.claude.json` to wire Engram globally for all Claude Code sessions.
+
+    ```json
+    // .mcp.json (project root) or ~/.claude.json
+    {
+      "mcpServers": {
+        "engram": { "command": "engram-mcp" }
+      }
+    }
+    ```
+
+    To generate and write this automatically:
+
+    ```bash
+    engram init claude-code
+    ```
+
+    Claude Code reads `.mcp.json` on startup and launches `engram-mcp` as a stdio subprocess. You can verify the connection is live by asking Claude: *"What does engram remember about this project?"*
+  </Tab>
+  <Tab title="Codex">
+    Add the snippet to `~/.codex/config.toml` for a global setup, or to `.codex/config.toml` inside your project for a local override.
+
+    ```toml
+    # ~/.codex/config.toml
+    [mcp_servers.engram]
+    command = "engram-mcp"
+    ```
+
+    To append this directly to your global Codex config in one step:
+
+    ```bash
+    engram init codex >> ~/.codex/config.toml
+    ```
+
+    Codex will spawn `engram-mcp` on the next session start and register the `remember` tool and `memory://recall` resource automatically.
+  </Tab>
+  <Tab title="opencode">
+    Add the following to `~/.config/opencode/opencode.json`:
+
+    ```json
+    // ~/.config/opencode/opencode.json
+    {
+      "mcp": {
+        "engram": { "type": "local", "command": ["engram-mcp"] }
+      }
+    }
+    ```
+
+    To print this snippet:
+
+    ```bash
+    engram init opencode
+    ```
+
+    The `"type": "local"` field tells opencode to manage the process lifecycle itself — no separate daemon is needed.
+  </Tab>
+</Tabs>
+
+## What the agent can do after wiring
+
+Once `engram-mcp` is registered, two capabilities become available in every agent session:
+
+| Capability | MCP identifier | What it does |
+|---|---|---|
+| Store a memory | `remember` tool | Stages a candidate fact for human review |
+| Read memories | `memory://recall` resource | Returns ranked, promoted memories for the current project |
+
+The agent decides when to call these — you do not need to prompt it explicitly. Most agents will read `memory://recall` at the start of a conversation and call `remember` when they learn something worth preserving (a preference, a decision, a constraint).
+
+<Note>
+  Memories staged via the `remember` tool enter a **pending** queue and are not recalled until you promote them with `engram promote`. See the [Reviewing Memories](/guides/reviewing-memories) guide for the full review workflow.
+</Note>
+
+## Using engram serve for other agents
+
+If you are using an agent or IDE extension that supports MCP but is not listed above, you can point it at `engram-mcp` directly. The server is a standard stdio MCP process — any client that can launch a local command works.
+
+```bash
+engram serve
+```
+
+`engram serve` starts `engram-mcp` in the foreground and prints the stdio connection details. Use your agent's custom MCP configuration UI or config file to register the command `engram-mcp` (or the full path if it is not on your `PATH`).
+
+<Tip>
+  `engram-mcp` is designed to be spawned **on demand** by the agent over stdio — you do not need to keep a long-running daemon. Each agent session starts and stops its own subprocess, so there is nothing extra to manage.
+</Tip>
+
+## Next steps
+
+- [Harvesting Sessions](/guides/harvesting-sessions) — extract memories passively from existing transcripts.
+- [Reviewing Memories](/guides/reviewing-memories) — approve or reject staged candidates.
+- [Context Files](/guides/context-files) — write memories into `AGENTS.md` for agents that don't speak MCP.

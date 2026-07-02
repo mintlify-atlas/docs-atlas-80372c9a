@@ -1,0 +1,123 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Engram",
+  "projectDescription": "An agent-agnostic memory layer that captures facts from any coding agent, gates sensitive writes behind human review, and recalls memories everywhere via MCP.",
+  "theme": "luma",
+  "primaryColor": "#7c7c7c",
+  "lightColor": "#070707",
+  "darkColor": "#d3d3d3",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/memory-model",
+              "concepts/capture-review-recall",
+              "concepts/risk-tiers",
+              "concepts/storage"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/wiring-agents",
+              "guides/harvesting-sessions",
+              "guides/reviewing-memories",
+              "guides/context-files"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/config-file",
+              "configuration/environment-variables"
+            ]
+          },
+          {
+            "group": "Security & Privacy",
+            "pages": [
+              "security/overview",
+              "security/tiered-writes"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "reference/cli/remember",
+              "reference/cli/harvest",
+              "reference/cli/sync",
+              "reference/cli/queue-review",
+              "reference/cli/recall",
+              "reference/cli/doctor"
+            ]
+          },
+          {
+            "group": "MCP Server",
+            "pages": [
+              "reference/mcp/overview",
+              "reference/mcp/tools",
+              "reference/mcp/resources"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "reference/architecture",
+              "reference/schema"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Agent-agnostic: works with Claude Code, Codex, opencode, and any MCP-capable client",
+    "Local-first: all memories stored as plain Markdown + YAML on your machine, no telemetry",
+    "Tiered write safety: low-risk facts auto-log, sensitive kinds (fiscal, identity, health) require human approval",
+    "MCP-native: exposes remember tool and memory://recall resource over stdio",
+    "Transcript harvesting: mine durable facts from past sessions using any OpenAI-compatible local or cloud model",
+    "Full audit trail: atomic writes, append-only audit.jsonl, single-step undo tokens",
+    "Memory lifecycle: confidence, decay horizon, last_verified, dedup, conflict detection, doctor report"
+  ],
+  "publicApiSurface": [
+    "engram remember <fact> [--kind KIND] [--confidence FLOAT]",
+    "engram list [--status STATUS]",
+    "engram harvest <path> [--harness HARNESS] [--min-confidence FLOAT]",
+    "engram sync [--apply]",
+    "engram queue",
+    "engram show <memory-id>",
+    "engram promote <memory-id> [--confirm]",
+    "engram reject <memory-id> [--reason REASON]",
+    "engram forget <memory-id>",
+    "engram recall [QUERY] [--limit N]",
+    "engram gen-context [--write PATH] [--limit N]",
+    "engram init <harness>",
+    "engram serve",
+    "engram doctor",
+    "engram import <directory>",
+    "engram version",
+    "MCP tool: remember(fact, kind, confidence)",
+    "MCP tool: recall(query, limit)",
+    "MCP resource: memory://recall",
+    "Kind enum: preference, identity, fiscal, people, project, constraint, infra, tooling, health, location",
+    "Status enum: pending, promoted, rejected, stale",
+    "Config: store.dir, extractor.base_url, extractor.model, extractor.api_key, bridge.autopromote, bridge.kind_allowlist",
+    "Env vars: ENGRAM_STORE, ENGRAM_CONFIG, ENGRAM_AUTOPROMOTE, ENGRAM_EXTRACTOR_URL, ENGRAM_EXTRACTOR_MODEL, ENGRAM_EXTRACTOR_KEY, ENGRAM_BRIDGE_KIND_ALLOWLIST"
+  ]
+}

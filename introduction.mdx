@@ -1,0 +1,82 @@
+---
+title: "Engram: Agent-Agnostic Memory Layer for AI Coding"
+sidebarTitle: "Introduction"
+description: "Engram is a local-first memory layer that captures facts from coding sessions, gates sensitive ones behind human review, and surfaces them via MCP."
+---
+
+Engram solves a problem that every developer running AI coding agents eventually hits: your agent does brilliant work in one session, then forgets everything in the next. Preferences, project constraints, infrastructure details, and sensitive credentials all vanish the moment the context window closes. Engram acts as a persistent, structured memory layer that sits between your agents and a local store — capturing what they learn, letting you curate what they keep, and injecting the right facts back at the start of every new session.
+
+## The Problem With Session Amnesia
+
+Modern coding agents — Claude Code, Codex, OpenCode, and others — are stateless by design. Each session starts from scratch. Developers work around this today in one of two ways: they maintain a hand-written `AGENTS.md` or `CLAUDE.md` file and update it manually after each session, or they paste project context into every prompt. Both approaches are tedious, error-prone, and break down as context grows.
+
+Engram automates the capture side while keeping humans in the loop for anything sensitive. A `--kind tooling` fact like "I prefer pnpm over npm" is low-risk and can be auto-promoted into the registry. A `--kind fiscal` fact like a VAT number goes into a review queue and waits for an explicit `engram promote` before it ever reaches agent context.
+
+## How Engram Compares
+
+| Capability | Hand-written CLAUDE.md | Typical memory tools | Engram |
+|---|---|---|---|
+| Automatic capture from sessions | ❌ | ✅ | ✅ |
+| Human review gate for sensitive facts | ❌ | ❌ | ✅ |
+| Risk-tiered auto-promotion | ❌ | ❌ | ✅ |
+| Local-first, no cloud dependency | ✅ | ❌ | ✅ |
+| MCP server for agent recall | ❌ | Varies | ✅ |
+| Structured kinds & confidence scores | ❌ | ❌ | ✅ |
+| Undo / audit trail | ❌ | ❌ | ✅ |
+| Import from markdown files | ✅ manual | ❌ | ✅ |
+
+## Supported Agents
+
+Engram is agent-agnostic at the protocol level — any MCP-compatible client can connect to `engram serve`. Three harnesses have first-class `engram init` support for config snippet generation:
+
+| Agent | Harness name | Config method |
+|---|---|---|
+| Claude Code | `claude-code` | `engram init claude-code` |
+| OpenAI Codex CLI | `codex` | `engram init codex` |
+| OpenCode | `opencode` | `engram init opencode` |
+
+Any other agent that supports MCP over stdio can be wired manually using the snippet produced by `engram init`.
+
+## Key Design Principles
+
+**Local-first.** Every memory lives in `~/.local/share/engram` — plain markdown and JSON files you can read, edit, or back up without any proprietary tooling. No cloud account, no API key, no telemetry.
+
+**Risk-tiered promotion.** Engram assigns every memory a risk tier from 1 to 3. Tier 1 kinds (`preference`, `tooling`, `project`, `infra`) are safe to auto-append when `ENGRAM_AUTOPROMOTE=true`. Tier 3 kinds (`identity`, `fiscal`, `people`, `constraint`, `location`, `health`) always route to the review queue and require an explicit `--confirm` flag to promote. Tier 2 is assigned programmatically to memories elevated out of tier 1 during registry reconciliation.
+
+**Human in the loop.** The queue-and-promote workflow means sensitive facts can never reach your agents without deliberate human approval. `engram doctor` surfaces stale, low-confidence, unverified, and conflicting memories so you can keep the registry clean over time.
+
+**Structured and queryable.** Memories carry a kind, a confidence score, a status, and a timestamp. `engram recall` filters by query string; `engram gen-context` renders a curated block you can write directly to `AGENTS.md` or `CLAUDE.md`.
+
+**Reversible.** `engram forget` retracts a promoted memory and emits an undo token. Every promotion and rejection is recorded in `audit.jsonl` and backed up under `.bak/`.
+
+## What's Stored Where
+
+```
+~/.local/share/engram/
+├── memory.md          # Registry — YAML frontmatter is source of truth
+├── memory-log.md      # Append-only auto-capture log
+├── queue/             # Staging area for sensitive facts (*.json)
+├── audit.jsonl        # Full audit trail
+└── .bak/              # Undo snapshots
+```
+
+<Note>
+  Engram is not yet published to PyPI. Install it directly from GitHub or from a local clone. See the [Installation](/installation) page for all three methods.
+</Note>
+
+## Explore the Docs
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install Engram, capture your first facts, review the queue, and wire into an agent in under five minutes.
+  </Card>
+  <Card title="Installation" icon="wrench" href="/installation">
+    Requirements, install methods (uv, pipx, clone), entry points, and verification steps.
+  </Card>
+  <Card title="Wiring Agents" icon="plug" href="/guides/wiring-agents">
+    Connect Claude Code, Codex, and OpenCode to your local Engram MCP server.
+  </Card>
+  <Card title="Memory Model" icon="database" href="/concepts/memory-model">
+    Understand kinds, statuses, risk tiers, confidence scores, and the promotion lifecycle.
+  </Card>
+</CardGroup>

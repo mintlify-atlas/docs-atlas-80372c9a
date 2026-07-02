@@ -1,0 +1,162 @@
+---
+title: "Engram Security Overview: Local-First, No Telemetry"
+sidebarTitle: "Overview"
+description: "How Engram keeps your data local — no cloud, no telemetry, strict file permissions, safe API key handling, and guidance on backups and version control."
+---
+
+Engram is built on a single security principle: your memories stay on your machine. There is no Engram cloud backend, no analytics pipeline, and no call home on startup or shutdown. The only network traffic Engram ever generates is the request you explicitly configure to your extraction endpoint — and you can point that at a fully local inference server to eliminate network traffic entirely.
+
+---
+
+## Local-first design
+
+Every piece of data Engram manages — facts, the review queue, audit logs, and context files — lives in a plain-file store on your local filesystem. Nothing is transmitted to Engram servers because no Engram servers exist.
+
+| Property | Detail |
+|---|---|
+| Cloud backend | None |
+| Telemetry / analytics | None |
+| Auto-update checks | None |
+| Network calls at startup | None |
+| Network calls during operation | Only to your configured extractor endpoint |
+
+<Note>
+  Engram's only outbound network call is to the `extractor.base_url` you set in `config.toml` (or `ENGRAM_EXTRACTOR_URL`). If you never run `engram harvest`, no network calls occur at all.
+</Note>
+
+---
+
+## Extractor network model
+
+The extractor is the component that calls an LLM to identify durable facts in a session transcript. It is the only component that makes an outbound request.
+
+**What is sent:** The text content of the transcript file you pass to `engram harvest`. No store contents, no previously captured memories, and no system metadata are included in the request.
+
+**Where it goes:** Exactly the endpoint you configure — no proxies, no fallback URLs.
+
+<Accordion title="Fully offline operation with LM Studio or Ollama">
+  Point the extractor at a local inference server and Engram operates with zero network traffic:
+
+  ```toml
+  # ~/.config/engram/config.toml
+
+  [extractor]
+  base_url = "http://localhost:1234/v1"   # LM Studio
+  model     = "local-model"
+  api_key   = ""
+  ```
+
+  Or with Ollama:
+
+  ```toml
+  [extractor]
+  base_url = "http://localhost:11434/v1"
+  model     = "llama3.2"
+  api_key   = ""
+  ```
+
+  Once configured, `engram harvest`, `engram sync`, `engram recall`, and all MCP operations run entirely on-device.
+</Accordion>
+
+<Accordion title="Cloud provider (OpenAI, Anthropic, etc.)">
+  If you prefer a cloud model for extraction quality, set the endpoint and model accordingly. Only the transcript content is sent — store contents are never transmitted.
+
+  ```toml
+  [extractor]
+  base_url = "https://api.openai.com/v1"
+  model     = "gpt-4o"
+  # api_key set via ENGRAM_EXTRACTOR_KEY env var — not stored here
+  ```
+
+  Review your provider's data-processing and retention policies before harvesting transcripts that contain sensitive personal information.
+</Accordion>
+
+---
+
+## API key handling
+
+Engram reads the extractor API key from `extractor.api_key` in `config.toml` or from the `ENGRAM_EXTRACTOR_KEY` environment variable. The value is held in memory for the duration of the process and:
+
+- Is **never written to the store** (memory-log, registry, or any other store file).
+- Is **never included in `audit.jsonl`** entries.
+- Is **never logged** to stdout or stderr.
+
+<Tip>
+  Prefer `ENGRAM_EXTRACTOR_KEY` over storing the key in `config.toml` — environment variables vanish when the shell session ends and are harder to accidentally commit to version control.
+</Tip>
+
+---
+
+## Store file permissions
+
+Engram applies strict filesystem permissions to all store files at creation time:
+
+| Item | Permission |
+|---|---|
+| Store directory and all subdirectories | `0700` (owner read/write/execute only) |
+| All store files (Markdown, YAML, JSONL) | `0600` (owner read/write only) |
+
+This prevents other users on the same system from reading or modifying your memories. Permissions are set at write time — Engram does not retroactively change permissions on files it did not create. If you migrate an existing store, verify permissions manually with `ls -la`.
+
+<Warning>
+  On shared or multi-user systems, confirm that your home directory and the store parent path are not world-readable. `0600` file permissions protect individual files, but a world-readable parent directory exposes the directory listing.
+</Warning>
+
+---
+
+## Version control guidance
+
+The store is plain text (Markdown + YAML + JSONL), which makes it tempting to commit to Git for history and backup. This is safe for non-sensitive stores — but exercise caution if your store contains curated-kind facts.
+
+| Scenario | Recommendation |
+|---|---|
+| Store contains only `preference`, `tooling`, `project`, `infra` facts | Git is reasonable; review diffs before pushing to a shared remote |
+| Store contains `identity`, `fiscal`, `health`, `people`, `location`, or `constraint` facts | Keep the store out of version control; use encrypted backup instead |
+| Public or team-shared repository | **Never** commit the store; add the store directory to `.gitignore` |
+
+**Example `.gitignore` entry:**
+
+```gitignore
+# Engram memory store
+~/.local/share/engram/
+```
+
+Or if you committed your store to a project-local path:
+
+```gitignore
+.engram/
+engram-store/
+```
+
+---
+
+## Backup options
+
+Because the store is plain files, any file-sync or backup tool works:
+
+<Accordion title="Encrypted backup with restic">
+  ```bash
+  # Back up to a local encrypted repo
+  restic -r /Volumes/Backup/engram init
+  restic -r /Volumes/Backup/engram backup ~/.local/share/engram
+  ```
+</Accordion>
+
+<Accordion title="Encrypted sync with rclone + cloud storage">
+  ```bash
+  # Encrypt in-transit and at-rest with rclone crypt remote
+  rclone sync ~/.local/share/engram cryptremote:engram
+  ```
+</Accordion>
+
+<Accordion title="Time Machine / system snapshots">
+  The store directory is automatically included in Time Machine backups (macOS) and most system snapshot tools. No configuration needed. Verify the store path is not excluded in your backup software's exclusion list.
+</Accordion>
+
+---
+
+## Sensitive-kind quarantine
+
+Engram enforces an additional layer of protection for memories tagged with sensitive kinds regardless of store-level permissions. Facts tagged `identity`, `fiscal`, `people`, `health`, `location`, or `constraint` are always routed to the tier-3 review queue and require explicit `--confirm` before being written. They can never be added to `bridge.kind_allowlist` for automatic promotion.
+
+See [Tiered Writes](/security/tiered-writes) for the full write-safety model.

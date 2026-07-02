@@ -1,0 +1,184 @@
+---
+title: "Sync, Init & Serve: Bridge Memories and Wire Harnesses"
+sidebarTitle: "Sync, Init & Serve"
+description: "Promote pending candidates with `sync`, generate MCP config snippets for any supported harness with `init`, and start the MCP server with `serve`."
+---
+
+These three commands handle the operational layer of Engram: moving memories from the staging queue into active recall, connecting harnesses to Engram over the Model Context Protocol, and running the MCP server itself. `sync` is safe to run repeatedly — it defaults to a dry-run so you can preview changes before committing. `init` is a one-time wiring step per harness. `serve` keeps the MCP server alive for agent sessions that communicate over stdio.
+
+---
+
+## `sync`
+
+Runs the promotion bridge over every `pending` candidate and decides how each one should be routed: direct append, queued for human review, or skipped. Without `--apply`, the command is a harmless dry-run that shows what *would* happen.
+
+```bash
+engram sync [--apply]
+```
+
+### Arguments & Options
+
+<ParamField query="--apply" type="boolean" default="false">
+  Execute the routing decisions and write changes to the memory store. Without this flag, Engram prints a dry-run summary and exits without modifying anything.
+
+  **Both** this flag and autopromote being enabled are required for actual writes to occur. Enable autopromote via `autopromote: true` in `~/.config/engram/config.toml` or the environment variable `ENGRAM_AUTOPROMOTE=true`. If autopromote is not set, `--apply` is accepted but no writes occur.
+</ParamField>
+
+### Output
+
+The summary line reports three counters:
+
+```text
+[dry-run] append=<N> queue=<N> skip=<N>
+```
+
+Or, when `--apply` is active:
+
+```text
+append=<N> queue=<N> skip=<N>
+```
+
+Each routed memory is listed individually beneath the summary:
+
+```text
+  append mem-0001 [tooling] I prefer pnpm over npm  (low-risk)
+  queue  mem-0002 [fiscal]  My AWS budget cap is $500/mo  (tier-3)
+  skip   mem-0003 [preference] I like dark mode  (duplicate)
+```
+
+Route meanings:
+
+| Route | Meaning |
+|-------|---------|
+| `append` | Low-risk fact; promoted directly to recall on `--apply`. |
+| `queue` | Higher-risk fact (tier-3); moved to the review queue, requires `promote --confirm`. |
+| `skip` | Duplicate or otherwise filtered out; no action taken. |
+
+### Examples
+
+Preview what sync would do without making any changes:
+
+```bash
+engram sync
+```
+
+```bash
+[dry-run] append=2 queue=1 skip=0
+  append mem-0001 [tooling]    I prefer pnpm over npm       (low-risk)
+  append mem-0005 [preference] I prefer 2-space indentation (low-risk)
+  queue  mem-0002 [fiscal]     My AWS budget cap is $500/mo (tier-3)
+```
+
+Apply the changes (requires autopromote to be enabled):
+
+```bash
+ENGRAM_AUTOPROMOTE=true engram sync --apply
+```
+
+```bash
+append=2 queue=1 skip=0
+  append mem-0001 [tooling]    I prefer pnpm over npm       (low-risk)
+  append mem-0005 [preference] I prefer 2-space indentation (low-risk)
+  queue  mem-0002 [fiscal]     My AWS budget cap is $500/mo (tier-3)
+```
+
+<Warning>
+  Memories routed to `queue` are **not** promoted automatically even with `--apply`. They require an explicit `engram promote <id> --confirm` to enter recall. This is intentional for higher-risk memory kinds such as `fiscal`, `identity`, and `constraint`.
+</Warning>
+
+<Note>
+  Run `engram sync` (no flags) as often as you like — it is read-only in dry-run mode and will never corrupt your memory store.
+</Note>
+
+---
+
+## `init`
+
+Prints the JSON configuration snippet you need to add to a harness's MCP config file in order to wire it to the Engram MCP server. The snippet is harness-specific and ready to paste.
+
+```bash
+engram init <harness>
+```
+
+### Arguments & Options
+
+<ParamField body="harness" type="string" required>
+  The agent harness to generate config for.
+
+  Valid values: `claude-code`, `codex`, `opencode`.
+</ParamField>
+
+### Examples
+
+Generate a Claude Code MCP config snippet:
+
+```bash
+engram init claude-code
+```
+
+```json
+{
+  "mcpServers": {
+    "engram": {
+      "command": "engram",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Generate config for Codex:
+
+```bash
+engram init codex
+```
+
+Generate config for OpenCode:
+
+```bash
+engram init opencode
+```
+
+<Tip>
+  Paste the output into the appropriate MCP config file for your harness. For Claude Code this is typically `~/.claude/claude_desktop_config.json`. Once wired, agents can call the `remember` and `recall` MCP tools and read the `memory://recall` resource without any extra setup.
+</Tip>
+
+---
+
+## `serve`
+
+Starts the Engram MCP server over stdio. The server exposes two tools (`remember`, `recall`) and one resource (`memory://recall`) to any connected harness. This command is normally invoked automatically by the harness using the config produced by `engram init`, but you can also run it directly for debugging.
+
+```bash
+engram serve
+```
+
+### Arguments & Options
+
+This command takes no arguments or options.
+
+### Exposed MCP surface
+
+| Type | Name | Description |
+|------|------|-------------|
+| Tool | `remember` | Stage a fact into memory. Mirrors `engram remember`. |
+| Tool | `recall` | Query promoted memories. Mirrors `engram recall`. |
+| Resource | `memory://recall` | Static snapshot of all promoted memories for context injection. |
+
+### Example
+
+```bash
+engram serve
+```
+
+```bash
+engram MCP server running (stdio)
+```
+
+<Note>
+  `serve` blocks and communicates over stdin/stdout. It is designed to be launched as a subprocess by your harness, not run interactively. Use `engram init <harness>` to get the correct launch config rather than starting it manually.
+</Note>
+
+<Warning>
+  Only one `engram serve` process should be running per user session. Starting a second instance against the same store may cause write conflicts.
+</Warning>

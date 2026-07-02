@@ -1,0 +1,214 @@
+---
+title: "Engram config.toml Reference: Keys, Defaults, Examples"
+sidebarTitle: "Config File"
+description: "Complete reference for ~/.config/engram/config.toml — every key, type, default, and validation rule, with LM Studio and cloud provider examples."
+---
+
+Engram reads its configuration from a single TOML file at `~/.config/engram/config.toml`. The file is optional — every key has a built-in default — but creating it lets you persist extractor settings, point the store at a custom path, and control bridge promotion behaviour without setting environment variables on every shell session. Any value in the config file can be overridden at runtime by the corresponding environment variable.
+
+<Tip>
+  Override the config file path itself by setting `ENGRAM_CONFIG=/path/to/custom.toml` before running any `engram` command. This is useful for managing separate profiles (work vs. personal) or running automated tests with an isolated config.
+</Tip>
+
+## File location
+
+| Platform | Default path |
+|---|---|
+| Linux / macOS | `~/.config/engram/config.toml` |
+| Custom | Set `ENGRAM_CONFIG` to any absolute path |
+
+Engram creates the parent directory (`~/.config/engram/`) on first run if it does not already exist. If the file is absent, all built-in defaults apply.
+
+## Full config skeleton
+
+The following skeleton lists every supported key with its default value. All sections and keys are optional — include only what you need to change.
+
+```toml
+[store]
+dir = "~/.local/share/engram"
+
+[extractor]
+base_url = "http://localhost:1234/v1"
+model     = "local-model"
+api_key   = ""
+
+[bridge]
+autopromote    = false
+kind_allowlist = ["preference", "tooling", "infra"]
+```
+
+---
+
+## `[store]` section
+
+The store section controls where Engram persists your memory files on disk.
+
+<ParamField path="store.dir" type="string" default="~/.local/share/engram">
+  Absolute or `~`-prefixed path to the directory Engram uses as its local store. Engram will create the directory (and any missing parents) on first write. Must be a string — passing a TOML array or integer raises a `ConfigError` at startup.
+
+  Override at runtime with the `ENGRAM_STORE` environment variable.
+</ParamField>
+
+**Example — custom store path:**
+
+```toml
+[store]
+dir = "~/Documents/engram-memories"
+```
+
+<Warning>
+  Keep the store directory out of a public (or shared-team) version-control repository if it contains private facts such as identity or fiscal information. See the [Security overview](/security/overview) for file-permission details.
+</Warning>
+
+---
+
+## `[extractor]` section
+
+The extractor section configures the OpenAI-compatible endpoint Engram calls when harvesting facts from session transcripts. All three keys map directly to fields on the internal `ExtractorConfig` dataclass.
+
+<ParamField path="extractor.base_url" type="string" default="http://localhost:1234/v1">
+  Base URL of the OpenAI-compatible chat completions endpoint. LM Studio's default is `http://localhost:1234/v1`; Ollama uses `http://localhost:11434/v1`. For cloud providers, supply the provider's base URL (e.g. `https://api.openai.com/v1`).
+
+  Override at runtime with `ENGRAM_EXTRACTOR_URL`.
+</ParamField>
+
+<ParamField path="extractor.model" type="string" default="local-model">
+  Model identifier forwarded in the `model` field of every chat completions request. For LM Studio and Ollama, this must match the model name shown in their UI. For OpenAI, use a value like `gpt-4o` or `gpt-4.1-mini`.
+
+  Override at runtime with `ENGRAM_EXTRACTOR_MODEL`.
+</ParamField>
+
+<ParamField path="extractor.api_key" type="string" default="(empty)">
+  API key sent in the `Authorization: Bearer` header. Leave empty for local inference servers that do not require authentication. For cloud providers, set this to your secret key.
+
+  Override at runtime with `ENGRAM_EXTRACTOR_KEY`. The key is **never** written to the store — it lives only in this config file or your shell environment.
+</ParamField>
+
+<Note>
+  Two additional fields — `timeout` (default `60.0` seconds) and `temperature` (default `0.0`) — are configurable programmatically through the `ExtractorConfig` dataclass but are not yet exposed in the TOML file. They retain their defaults when using file-based configuration.
+</Note>
+
+---
+
+## `[bridge]` section
+
+The bridge section governs how pending facts from the review queue are promoted into the memory store.
+
+<ParamField path="bridge.autopromote" type="boolean" default="false">
+  When `false` (the default), `engram sync --apply` performs a dry run and prints the promotion plan without writing anything. Set to `true` to allow automatic writes to the store when `--apply` is passed.
+
+  This is a deliberate safety default: you must explicitly opt in to automated writes. Override at runtime with `ENGRAM_AUTOPROMOTE=true`.
+</ParamField>
+
+<ParamField path="bridge.kind_allowlist" type="list of strings" default="(all non-curated kinds)">
+  An optional list of memory-kind identifiers. When set, only facts whose kind appears in this list are eligible for automatic promotion via the bridge. Omit the key entirely to allow all non-curated kinds through.
+
+  Override at runtime with `ENGRAM_BRIDGE_KIND_ALLOWLIST` (comma-separated).
+</ParamField>
+
+### `kind_allowlist` validation rules
+
+Engram validates the allowlist at startup and raises a `ConfigError` for any of the following conditions:
+
+| Condition | Error |
+|---|---|
+| List contains a **curated kind** | `ConfigError` — curated kinds always require human review |
+| List contains an **unknown kind** | `ConfigError` — unrecognised kind identifier |
+| Value is not a list of strings | `ConfigError` — type mismatch |
+
+**Curated kinds that may NOT appear in `kind_allowlist`:**
+
+```text
+identity   fiscal   people   constraint   location   health
+```
+
+These kinds always route to the tier-3 review queue regardless of any allowlist entry. Attempting to add them to the allowlist is an explicit error so misconfiguration is caught immediately rather than silently skipped.
+
+**Valid (auto-promotable) kinds you can include:**
+
+```text
+preference   tooling   project   infra
+```
+
+---
+
+## Configuration examples
+
+<Accordion title="Local inference with LM Studio (default setup)">
+  The minimal config for a fully offline LM Studio setup. All values here are also the built-in defaults, so you only need this file if you want to customise the store path.
+
+  ```toml
+  [store]
+  dir = "~/.local/share/engram"
+
+  [extractor]
+  base_url = "http://localhost:1234/v1"
+  model     = "local-model"
+  api_key   = ""
+
+  [bridge]
+  autopromote = false
+  ```
+</Accordion>
+
+<Accordion title="Local inference with Ollama">
+  Ollama listens on port 11434 and exposes an OpenAI-compatible endpoint. Replace `llama3.2` with whichever model you have pulled.
+
+  ```toml
+  [store]
+  dir = "~/.local/share/engram"
+
+  [extractor]
+  base_url = "http://localhost:11434/v1"
+  model     = "llama3.2"
+  api_key   = ""
+  ```
+</Accordion>
+
+<Accordion title="Cloud provider (OpenAI)">
+  For OpenAI, point `base_url` at the OpenAI API and supply your secret key. It is safer to set the key via `ENGRAM_EXTRACTOR_KEY` so it never touches the filesystem.
+
+  ```toml
+  [extractor]
+  base_url = "https://api.openai.com/v1"
+  model     = "gpt-4o"
+  # api_key intentionally omitted — set ENGRAM_EXTRACTOR_KEY instead
+  ```
+</Accordion>
+
+<Accordion title="Autopromote with restricted kind allowlist">
+  Enables automated bridge promotion for `preference` and `tooling` facts only. Any other kind (including curated kinds) continues to queue for manual review.
+
+  ```toml
+  [bridge]
+  autopromote    = true
+  kind_allowlist = ["preference", "tooling"]
+  ```
+</Accordion>
+
+<Accordion title="Custom store path with autopromote enabled">
+  Stores memories in a custom directory and allows the bridge to write automatically when `--apply` is passed.
+
+  ```toml
+  [store]
+  dir = "~/vault/engram"
+
+  [bridge]
+  autopromote = true
+  ```
+</Accordion>
+
+---
+
+## Validation summary
+
+Engram validates the config file at startup. Any error prevents the command from running and prints a descriptive message indicating which key is invalid.
+
+| Key | Expected type | Additional constraints |
+|---|---|---|
+| `store.dir` | string | Must be a valid filesystem path |
+| `extractor.base_url` | string | Must be a valid URL |
+| `extractor.model` | string | — |
+| `extractor.api_key` | string | — |
+| `bridge.autopromote` | boolean | `true` or `false` |
+| `bridge.kind_allowlist` | list of strings | No curated kinds; no unknown kinds |

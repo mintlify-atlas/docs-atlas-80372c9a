@@ -1,0 +1,127 @@
+---
+title: "Doctor & Version: Diagnose Your Engram Memory Store"
+sidebarTitle: "Doctor & Version"
+description: "Audit your memory store for stale, low-confidence, unverified, and conflicting entries with `doctor`. Confirm your installed Engram release with `version`."
+---
+
+Healthy memory stores need periodic maintenance. `doctor` scans every promoted memory and surfaces four categories of concern: entries that have passed their decay horizon (stale), entries whose confidence has dropped below the useful threshold (low_confidence), entries that came from automated sources but have never been human-verified (unverified), and pairs of entries whose facts directly contradict each other (conflicts). No changes are made — `doctor` is a read-only diagnostic tool. Use the IDs it reports as input to `promote`, `reject`, or `forget` to resolve issues. `version` is the companion one-liner that confirms which release you are running.
+
+---
+
+## `doctor`
+
+Scans all promoted memories and prints a categorized report of entries that need attention. The command is entirely read-only: it will never modify, delete, or re-route any memory. Think of it as `lint` for your memory store.
+
+```bash
+engram doctor
+```
+
+### Arguments & Options
+
+This command takes no arguments or options.
+
+### Report categories
+
+| Category | Condition |
+|----------|-----------|
+| `stale` | The memory's last-confirmed timestamp has passed its decay horizon. |
+| `low_confidence` | The memory's confidence score is below `0.5`. |
+| `unverified` | `learned_by` is `harvest` or `imported` **and** `last_verified` is `None`. |
+| `conflicts` | Two promoted memories that the dedup engine scores as contradictory. |
+
+### Output format
+
+Each category is printed as a header with a count, followed by the affected IDs. Conflicts are listed as pairs:
+
+```text
+stale: <N>
+  <id>
+  ...
+low_confidence: <N>
+  <id>
+  ...
+unverified: <N>
+  <id>
+  ...
+conflicts: <N>
+  (<id_a>, <id_b>)
+  ...
+```
+
+Categories with a count of `0` are still printed for completeness.
+
+### Example
+
+```bash
+engram doctor
+```
+
+```bash
+stale: 2
+  mem-0003
+  mem-0005
+low_confidence: 1
+  mem-0007
+unverified: 3
+  mem-0002
+  mem-0008
+  mem-0011
+conflicts: 1
+  (mem-0001, mem-0004)
+```
+
+### Resolving findings
+
+Each category maps to a recommended resolution:
+
+**stale** — Review with `engram show <id>`. If still accurate, re-promote with `engram promote <id> --confirm` to reset the decay clock. If outdated, `engram forget <id>`.
+
+**low_confidence** — Investigate with `engram show <id>`. If the fact is reliable, re-stage it with a higher `--confidence` using `engram remember`. Otherwise `engram forget <id>`.
+
+**unverified** — Run `engram show <id>` to read the harvested or imported content, then either confirm it with `engram promote <id> --confirm` (which sets `last_verified`) or discard it with `engram reject <id>`.
+
+**conflicts** — Run `engram show` on both IDs to compare them. Decide which fact is authoritative, `engram forget` the outdated one, and optionally `engram promote <id> --confirm` the surviving one to refresh its timestamp.
+
+<Warning>
+  A growing `unverified` count indicates that harvested or imported memories are accumulating without review. Unverified memories are promoted and **visible in recall**, but they carry no human confirmation. Run `engram doctor` regularly and clear the backlog to keep your memory store trustworthy.
+</Warning>
+
+<Tip>
+  Pipe `engram doctor` output to `grep` or `awk` to extract just the IDs for scripted bulk resolution. For example, to reject all stale memories in one pass:
+
+  ```bash
+  engram doctor | awk '/^stale/,/^[a-z]/' | grep 'mem-' | xargs -I{} engram reject {} --reason "expired"
+  ```
+</Tip>
+
+<Note>
+  `doctor` does **not** auto-fix anything. Every remediation step requires an explicit command. This is intentional — automated mutation of promoted memories without review would undermine the audit trail that makes Engram trustworthy.
+</Note>
+
+---
+
+## `version`
+
+Prints the currently installed Engram version string and exits. Useful for bug reports, CI logs, and confirming that an upgrade landed correctly.
+
+```bash
+engram version
+```
+
+### Arguments & Options
+
+This command takes no arguments or options.
+
+### Example
+
+```bash
+engram version
+```
+
+```bash
+engram 0.4.1
+```
+
+<Tip>
+  If `engram version` reports a different release than expected after an upgrade, check that your shell's `PATH` resolves to the correct Python environment. Running `which engram` will show you the active binary location.
+</Tip>

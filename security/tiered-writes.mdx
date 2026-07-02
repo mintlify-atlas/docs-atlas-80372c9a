@@ -1,0 +1,250 @@
+---
+title: "Engram Tiered Writes: Write-Safety Gates and Audit Trail"
+sidebarTitle: "Tiered Writes"
+description: "How Engram's three write tiers work: auto vs. curated kinds, conflict escalation, the --confirm gate, dry-run default, undo tokens, and audit.jsonl."
+---
+
+Every write Engram makes to your memory store passes through a three-tier safety model. The tier determines whether a fact is written automatically, requires a review step, or demands an explicit human confirmation. This model ensures that routine preferences flow into memory without friction while sensitive or conflicting information never slips in unreviewed.
+
+---
+
+## The three tiers
+
+| Tier | Name | Trigger | How to write |
+|---|---|---|---|
+| **1** | Auto-append | Fact kind is in `AUTO_KINDS` and no conflict detected | Written automatically when `autopromote=true` and `--apply` is passed |
+| **2** | Registry update | Metadata-level registry change | Written automatically when `autopromote=true` and `--apply` is passed |
+| **3** | Curated / confirmed | Fact kind is in `CURATED_KINDS`, **or** a conflict is detected | Requires `engram queue review` with `--confirm` |
+
+<Note>
+  Even tier-1 and tier-2 facts are not written by default. The bridge is in dry-run mode unless both `bridge.autopromote = true` (in config or via `ENGRAM_AUTOPROMOTE`) **and** the `--apply` flag are present.
+</Note>
+
+---
+
+## Kind classification
+
+Engram classifies every memory fact by its kind. The kind determines which tier the fact enters.
+
+### Auto kinds (tier 1)
+
+Facts with these kinds are candidates for automatic promotion. They are considered low-sensitivity and routine:
+
+```
+preference   tooling   project   infra
+```
+
+<Accordion title="Examples of auto-kind facts">
+  - `preference` — "Always use single quotes in Python"
+  - `tooling` — "This project uses pnpm, not npm"
+  - `project` — "The API lives in src/api/"
+  - `infra` — "Staging is deployed on Fly.io in the fra region"
+</Accordion>
+
+### Curated kinds (tier 3)
+
+Facts with these kinds are always routed to the review queue and require `--confirm`:
+
+```
+identity   fiscal   people   constraint   location   health
+```
+
+<Accordion title="Examples of curated-kind facts">
+  - `identity` — usernames, email addresses, SSH key fingerprints
+  - `fiscal` — billing accounts, pricing tiers, cost budgets
+  - `people` — names, roles, contact details of individuals
+  - `constraint` — hard rules the agent must never violate
+  - `location` — physical addresses, geographic regions with personal significance
+  - `health` — medical context, accessibility needs
+</Accordion>
+
+<Warning>
+  Curated kinds cannot be added to `bridge.kind_allowlist`. Attempting to do so raises a `ConfigError` at startup. This is intentional — Engram refuses to auto-promote sensitive facts even if you ask it to.
+</Warning>
+
+---
+
+## Conflict escalation
+
+When the bridge classifies a new fact, it runs deduplication against already-promoted facts (`dedup.compare`). If the incoming fact **conflicts** with an existing one — that is, both make incompatible claims about the same subject — the new fact is **always escalated to tier 3**, regardless of its kind.
+
+```
+new fact kind = "preference"  (normally tier 1)
+existing fact = contradicts it
+→ escalated to tier 3, queued for review
+```
+
+This means a conflict between two `preference` facts is treated with the same caution as an `identity` fact. You always decide which version of a conflicting truth wins.
+
+<Note>
+  Conflict escalation is a one-way ratchet — escalated facts never fall back to tier 1 or tier 2 automatically. You must explicitly approve or reject them via the review queue.
+</Note>
+
+---
+
+## Bridge behavior: plan vs. apply
+
+The bridge has two distinct phases:
+
+<Accordion title="promote.plan() — classify without writing">
+  `promote.plan()` reads the pending queue, runs deduplication, classifies each fact by tier, and returns the promotion plan as output. Nothing is written to the store. This is what runs when you call `engram sync` without `--apply`.
+
+  ```bash
+  # Dry run — shows the plan, writes nothing
+  engram sync
+  ```
+</Accordion>
+
+<Accordion title="promote.apply() — write tier-1 and tier-2 facts">
+  `promote.apply()` executes the plan produced by `promote.plan()`. It writes tier-1 and tier-2 facts to the store **only if** `autopromote=True`. Tier-3 facts remain in the queue regardless.
+
+  ```bash
+  # Writes tier-1/2 facts (requires autopromote=true in config or env)
+  engram sync --apply
+  ```
+
+  If `autopromote` is `false`, `promote.apply()` behaves identically to `promote.plan()` — the plan is shown and nothing is written.
+</Accordion>
+
+---
+
+## The `--confirm` gate (tier 3)
+
+Tier-3 facts — curated kinds and conflict-escalated facts — live in the review queue until a human explicitly acts on them. Approving a tier-3 fact calls `review.approve()`, which **refuses to execute without `confirm=True`**.
+
+```bash
+# Review what is queued
+engram queue review
+
+# Approve a specific item — --confirm is required
+engram queue review --approve <item-id> --confirm
+
+# Reject an item (marks as rejected, emits undo token)
+engram queue review --reject <item-id>
+```
+
+<Warning>
+  Calling `review.approve()` without `--confirm` raises an error and writes nothing. This is a deliberate friction point, not a bug — tier-3 facts should never be approved by accident or by a script running without human oversight.
+</Warning>
+
+---
+
+## Tier-1 write flow (end-to-end example)
+
+The following shows the full lifecycle for a low-sensitivity `tooling` fact:
+
+```text
+1. engram harvest session.md
+   └─ Extractor identifies: kind=tooling, value="project uses pnpm"
+   └─ Fact written to pending queue
+
+2. engram sync
+   └─ promote.plan() runs
+   └─ dedup.compare() — no conflict found
+   └─ Classified as tier 1
+   └─ Dry-run output: "1 fact ready to promote (tooling)"
+   └─ Nothing written yet
+
+3. engram sync --apply   (with autopromote=true)
+   └─ promote.apply() runs
+   └─ Previous memory-log.md content snapshotted → undo token issued
+   └─ Fact appended to memory-log.md
+   └─ Audit entry appended to audit.jsonl
+   └─ Output: "Promoted 1 fact"
+```
+
+---
+
+## Tier-3 write flow (end-to-end example)
+
+```text
+1. engram harvest session.md
+   └─ Extractor identifies: kind=identity, value="GitHub username: alice"
+   └─ Fact written to pending queue
+
+2. engram sync
+   └─ promote.plan() runs
+   └─ Classified as tier 3 (curated kind: identity)
+   └─ Output: "1 fact queued for review (identity)"
+   └─ Fact remains in queue — not written
+
+3. engram queue review
+   └─ Lists pending tier-3 items
+   └─ Displays: [abc123] identity — "GitHub username: alice"
+
+4. engram queue review --approve abc123 --confirm
+   └─ review.approve(confirm=True) runs
+   └─ Previous store content snapshotted → undo token issued
+   └─ Fact written to store
+   └─ Audit entry appended to audit.jsonl (endpoint="fact/approve")
+```
+
+---
+
+## Dry-run default
+
+The bridge does not write anything unless you explicitly enable it. This table summarises all combinations:
+
+| `autopromote` | `--apply` flag | Result |
+|---|---|---|
+| `false` | absent | Dry run — plan printed, nothing written |
+| `false` | present | Dry run — `autopromote=false` blocks writes |
+| `true` | absent | Dry run — `--apply` not passed |
+| `true` | present | **Tier-1 and tier-2 facts written** |
+
+Tier-3 facts are never written by `sync --apply` regardless of the `autopromote` setting.
+
+---
+
+## Undo tokens and atomic writes
+
+Every write operation — whether triggered by `promote.apply()` or `review.approve()` — follows the same atomic pattern:
+
+1. **Snapshot** the current content of the target file into a temporary location.
+2. **Write** the new content atomically (write to temp, then rename).
+3. **Emit an undo token** that references the snapshot.
+4. **Append an audit entry** to `audit.jsonl`.
+
+The undo token lets you roll back a single write with one command:
+
+```bash
+engram undo <undo-token>
+```
+
+This restores the previous file content from the snapshot. Only a single undo step is supported per token — there is no multi-level undo stack.
+
+---
+
+## The `forget` command
+
+`review.forget()` marks a promoted fact as rejected rather than approved. It does not delete the underlying store file entry immediately but records the rejection decision and prevents the fact from appearing in recall output.
+
+**What `forget` does:**
+
+1. Marks the fact as `promoted → rejected` in the registry.
+2. Emits an undo token so the rejection itself can be reversed.
+3. Appends an audit entry with `endpoint="fact/forget"`.
+
+```bash
+engram queue review --forget <item-id>
+```
+
+---
+
+## Audit trail (`audit.jsonl`)
+
+Every write — approval, promotion, rejection, or forget — appends a JSON line to `audit.jsonl` in the store root. The file is append-only and is never modified by Engram after an entry is written.
+
+**Example `audit.jsonl` entries:**
+
+```jsonl
+{"ts":"2025-01-15T10:23:44Z","endpoint":"fact/promote","kind":"tooling","id":"fact_a1b2","undo_token":"undo_x9y8"}
+{"ts":"2025-01-15T10:31:02Z","endpoint":"fact/approve","kind":"identity","id":"fact_c3d4","undo_token":"undo_z7w6"}
+{"ts":"2025-01-15T11:05:17Z","endpoint":"fact/forget","kind":"preference","id":"fact_e5f6","undo_token":"undo_v5u4"}
+```
+
+Each entry records the timestamp, operation endpoint, memory kind, fact identifier, and the undo token that can reverse the write.
+
+<Tip>
+  `audit.jsonl` is a first-class part of your store. Back it up alongside your memory files, and include it if you ever need to audit what was written or changed and when.
+</Tip>
